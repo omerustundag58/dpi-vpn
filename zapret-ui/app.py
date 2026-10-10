@@ -26,6 +26,8 @@ except ImportError:
 APP_TITLE = "DPI VPN v0.3"
 DNS_PRIMARY = "1.1.1.1"
 DNS_SECONDARY = "1.0.0.1"
+DNS6_PRIMARY = "2606:4700:4700::1111"
+DNS6_SECONDARY = "2606:4700:4700::1001"
 IE_KEY = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 
 THEMES = {
@@ -843,8 +845,12 @@ class App:
                 if not alias:
                     return
                 self.saved_dns = {"alias": alias}
+                # IPv4 + IPv6 birlikte: Windows IPv6 DNS'i tercih eder,
+                # orası değişmezse modem (zehirli) cevap verir.
                 cmd = (f'Set-DnsClientServerAddress -InterfaceAlias "{alias}" '
-                       f'-ServerAddresses {DNS_PRIMARY},{DNS_SECONDARY}')
+                       f'-ServerAddresses {DNS_PRIMARY},{DNS_SECONDARY}; '
+                       f'Set-DnsClientServerAddress -InterfaceAlias "{alias}" '
+                       f'-ServerAddresses {DNS6_PRIMARY},{DNS6_SECONDARY}')
                 import ctypes
                 ret = ctypes.windll.shell32.ShellExecuteW(
                     None, "runas", "powershell",
