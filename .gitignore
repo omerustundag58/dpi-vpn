@@ -25,3 +25,4 @@ WinDivert*.dll
 # Derleme artıkları
 *.log
 .DS_Store
+.cargo/config.toml

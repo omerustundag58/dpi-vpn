@@ -94,7 +94,7 @@ class DpiVpnService : VpnService() {
             @Suppress("DEPRECATION") Notification.Builder(this)
         val notif = nb.setContentTitle("DPI VPN")
             .setContentText("Koruma aktif")
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pi)
             .build()
         if (Build.VERSION.SDK_INT >= 29) {
@@ -166,6 +166,11 @@ class DpiVpnService : VpnService() {
         }
         if (conn.closed) return
         if (rst) { closeConn(conn); return }
+        // kayıp SYN-ACK sonrası istemci SYN'i tekrarlar — trafiğe geçmeden yanıtla
+        if (syn && payloadLen == 0 && conn.bytesUp.get() == 0L && conn.bytesDown.get() == 0L) {
+            sendTcp(srcIp, dstIp, srcPort, dstPort, conn.ourSeq - 1, conn.clientSeq, 0x12, byteArrayOf())
+            return
+        }
         if (payloadLen > 0) {
             var start = seq
             var off = payloadOff
@@ -179,7 +184,7 @@ class DpiVpnService : VpnService() {
             if (start != conn.clientSeq) return // boşluk — bekle
             val data = pkt.copyOfRange(off, off + len)
             try {
-                if (!conn.firstPayloadDone && dstPort == 443 && isTlsHello(data)) {
+                if (!conn.firstPayloadDone && (dstPort == 443 || dstPort == 8443) && isTlsHello(data)) {
                     sendSplit(conn, data)
                 } else {
                     writeAll(conn.channel, data)
@@ -291,18 +296,22 @@ class DpiVpnService : VpnService() {
         conn.ourSeq++
     }
 
-    /** src=uzak(sunucu gibi), dst=istemci: TUN'a yazılan paket. */
-    private fun sendTcp(srcIp: Int, dstIp: Int, srcPort: Int, dstPort: Int,
-                        seq: Long, ack: Long, flags: Int, payload: ByteArray) {
+    /** Yön: clientIp/clientPort = TUN tarafı (istemci), serverIp/serverPort = uzak.
+        Paket her zaman sunucudan istemciye yazılır. */
+    private fun sendTcp(clientIp: Int, serverIp: Int, clientPort: Int, serverPort: Int,
+                        seq: Long, ack: Long, flags: Int, payload: ByteArray,
+                        options: ByteArray = byteArrayOf()) {
+        val hlen = 20 + options.size
         val ip = ByteArray(20)
         ip[0] = 0x45; ip[1] = 0; ip[8] = 64; ip[9] = 6
-        IpUtil.ipToBytes(srcIp, ip, 12); IpUtil.ipToBytes(dstIp, ip, 16)
-        val tcp = ByteArray(20 + payload.size)
-        IpUtil.putU16(tcp, 0, srcPort); IpUtil.putU16(tcp, 2, dstPort)
+        IpUtil.ipToBytes(serverIp, ip, 12); IpUtil.ipToBytes(clientIp, ip, 16)
+        val tcp = ByteArray(hlen + payload.size)
+        IpUtil.putU16(tcp, 0, serverPort); IpUtil.putU16(tcp, 2, clientPort)
         IpUtil.putU32(tcp, 4, seq); IpUtil.putU32(tcp, 8, ack)
-        tcp[12] = 0x50; tcp[13] = flags.toByte(); IpUtil.putU16(tcp, 14, 65535)
-        payload.copyInto(tcp, 20)
-        val csum = IpUtil.tcpChecksum(srcIp, dstIp, tcp, 0, tcp.size)
+        tcp[12] = ((hlen / 4) shl 4).toByte(); tcp[13] = flags.toByte(); IpUtil.putU16(tcp, 14, 65535)
+        options.copyInto(tcp, 20)
+        payload.copyInto(tcp, hlen)
+        val csum = IpUtil.tcpChecksum(serverIp, clientIp, tcp, 0, tcp.size)
         IpUtil.putU16(tcp, 16, csum)
         val total = 20 + tcp.size
         IpUtil.putU16(ip, 2, total)
@@ -382,12 +391,12 @@ class DpiVpnService : VpnService() {
         }
     }
 
-    private fun sendUdp(srcIp: Int, dstIp: Int, srcPort: Int, dstPort: Int, payload: ByteArray) {
+    private fun sendUdp(clientIp: Int, serverIp: Int, clientPort: Int, serverPort: Int, payload: ByteArray) {
         val ip = ByteArray(20)
         ip[0] = 0x45; ip[1] = 0; ip[8] = 64; ip[9] = 17
-        IpUtil.ipToBytes(srcIp, ip, 12); IpUtil.ipToBytes(dstIp, ip, 16)
+        IpUtil.ipToBytes(serverIp, ip, 12); IpUtil.ipToBytes(clientIp, ip, 16)
         val u = ByteArray(8 + payload.size)
-        IpUtil.putU16(u, 0, srcPort); IpUtil.putU16(u, 2, dstPort)
+        IpUtil.putU16(u, 0, serverPort); IpUtil.putU16(u, 2, clientPort)
         IpUtil.putU16(u, 4, u.size) // checksum 0 (IPv4'te geçerli)
         payload.copyInto(u, 8)
         IpUtil.putU16(ip, 2, 20 + u.size)
