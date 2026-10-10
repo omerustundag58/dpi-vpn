@@ -26,3 +26,4 @@ WinDivert*.dll
 *.log
 .DS_Store
 .cargo/config.toml
+android/app/src/main/jniLibs/

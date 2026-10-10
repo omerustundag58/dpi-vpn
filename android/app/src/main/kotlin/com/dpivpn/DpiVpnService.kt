@@ -210,7 +210,7 @@ class DpiVpnService : VpnService() {
                 protect(it.socket())
                 it.configureBlocking(true)
                 it.socket().tcpNoDelay = true
-                it.connect(InetSocketAddress(InetAddress.getByAddress(ipBytes(dstIp)), dstPort), 8000)
+                it.socket().connect(InetSocketAddress(InetAddress.getByAddress(ipBytes(dstIp)), dstPort), 8000)
             }
         } catch (_: Exception) {
             // hedefe ulaşılamadı — istemciye RST
@@ -349,25 +349,23 @@ class DpiVpnService : VpnService() {
         if (ulen < 8 || n < ihl + ulen) return
         val payload = pkt.copyOfRange(ihl + 8, ihl + ulen)
         val key = "$srcIp:$srcPort>$dstIp:$dstPort"
-        var ch = udpMap[key]
-        if (ch == null || !ch.isOpen) {
-            ch = try {
+        val ch: DatagramChannel = udpMap[key]?.takeIf { it.isOpen } ?: run {
+            val fresh = try {
                 DatagramChannel.open().also {
                     protect(it.socket())
                     it.configureBlocking(true)
                     it.connect(InetSocketAddress(InetAddress.getByAddress(ipBytes(dstIp)), dstPort))
                 }
             } catch (_: Exception) { return }
-            udpMap[key] = ch
-            val cch = ch
+            udpMap[key] = fresh
             thread(name = "udp-$dstPort", isDaemon = true) {
                 val buf = ByteBuffer.allocate(4096)
                 var idle = 0
                 try {
-                    cch.socket().soTimeout = 5000
+                    fresh.socket().soTimeout = 5000
                     while (running.get() && idle < 6) {
                         buf.clear()
-                        val m = try { cch.read(buf) } catch (_: Exception) { idle++; continue }
+                        val m = try { fresh.read(buf) } catch (_: Exception) { idle++; continue }
                         if (m <= 0) { idle++; continue }
                         idle = 0
                         buf.flip()
@@ -379,9 +377,10 @@ class DpiVpnService : VpnService() {
                 } catch (_: Exception) {
                 } finally {
                     udpMap.remove(key)
-                    try { cch.close() } catch (_: Exception) {}
+                    try { fresh.close() } catch (_: Exception) {}
                 }
             }
+            fresh
         }
         try {
             ch.write(ByteBuffer.wrap(payload))

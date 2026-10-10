@@ -1,5 +1,5 @@
-<!-- Uygulama teması: AppCompat tabanlı açık tema. -->
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Uygulama teması: AppCompat tabanlı açık tema. -->
 <resources>
     <style name="Theme.DpiVpn" parent="Theme.AppCompat.Light.DarkActionBar" />
 </resources>

@@ -88,7 +88,7 @@ class MainActivity : Activity() {
             startActivity(Intent(this, AppPickerActivity::class.java))
         }
 
-        registerReceiver(stateReceiver, IntentFilter(ACTION_STATE_UPDATE))
+        registerReceiverCompat(stateReceiver, IntentFilter(ACTION_STATE_UPDATE))
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -117,6 +117,15 @@ class MainActivity : Activity() {
     private fun stopVpn() {
         startService(Intent(this, DpiVpnService::class.java).apply { action = "DISCONNECT" })
         statusText.text = getString(R.string.status_stopped)
+    }
+
+    // API 33+ registerReceiver bayrağı ister; alt sürümlerde eski imza.
+    private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION") registerReceiver(receiver, filter)
+        }
     }
 
     override fun onDestroy() {

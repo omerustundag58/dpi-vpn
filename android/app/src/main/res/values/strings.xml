@@ -1,5 +1,5 @@
-<!-- Türkçe arayüz metinleri: profiller, modlar, durum ve düğmeler. -->
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Türkçe arayüz metinleri: profiller, modlar, durum ve düğmeler. -->
 <resources>
     <string name="app_name">DPI VPN</string>
     <string name="profile_label">Profil (ISS)</string>

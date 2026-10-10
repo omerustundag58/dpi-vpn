@@ -1,5 +1,5 @@
-<!-- Uygulama listesi satırı: ikon, ad ve seçim kutusu. -->
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Uygulama listesi satırı: ikon, ad ve seçim kutusu. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
