@@ -213,10 +213,31 @@ async fn proxy_http_connect_flow() {
     let got = tokio::time::timeout(Duration::from_secs(5), rx_data.recv()).await.expect("timeout").expect("kanal");
     assert_eq!(got, hello, "CONNECT sonrasi veri bozuk");
     if let Ok(Some(gap)) = tokio::time::timeout(Duration::from_secs(2), rx_gap.recv()).await {
-        assert!(gap >= Duration::from_millis(20), "gecikme yok: {gap:?}");
-        println!("connect gap={gap:?} ok");
+        assert!(gap >= Duration::from_millis(20), "gecikme yok");
+        println!("connect gap ok");
     } else {
-        panic!("CONNECT akisinda b�lme g�zlenmedi");
+        panic!("CONNECT bolme gozlenmedi");
     }
+    proxy.kill().await.ok();
+}
+
+#[tokio::test]
+async fn proxy_plain_http_flow() {
+    // Duz HTTP: GET absolute-URI -> hedefe eksiksiz gitmeli.
+    let (target_addr, mut rx_data, _rx_gap) = spawn_fake_target().await;
+    let proxy_port = free_port().await;
+    let mut proxy = tokio::process::Command::new(proxy_bin())
+        .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
+               "--force-target", &target_addr])
+        .spawn().unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let req = b"GET http://ornek.test/sayfa?q=1 HTTP/1.1\r\nHost: ornek.test\r\nConnection: close\r\n\r\n";
+    let mut cli = TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await.unwrap();
+    cli.write_all(req).await.unwrap();
+    cli.flush().await.unwrap();
+
+    let got = tokio::time::timeout(Duration::from_secs(5), rx_data.recv()).await.expect("timeout").expect("kanal");
+    assert_eq!(got, req.to_vec(), "HTTP istek bozuldu");
     proxy.kill().await.ok();
 }

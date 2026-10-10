@@ -59,6 +59,8 @@ STR = {
     "syspx_off": ("Sistem Proxy: kapalı", "System proxy: off"),
     "dns_on": ("DNS Modu: AÇIK  (1.1.1.1)", "DNS mode: ON  (1.1.1.1)"),
     "dns_off": ("DNS Modu: kapalı  (1.1.1.1)", "DNS mode: off  (1.1.1.1)"),
+    "quic_on": ("QUIC Engelle: AÇIK (UDP 443)", "Block QUIC: ON (UDP 443)"),
+    "quic_off": ("QUIC Engelle: kapalı", "Block QUIC: off"),
     "settings": ("⚙ Ayarlar", "⚙ Settings"),
     "settings_title": ("Ayarlar", "Settings"),
     "theme": ("Tema", "Theme"),
@@ -262,6 +264,7 @@ class App:
         self.lan_share = False
         self.sys_proxy = False
         self.dns_mode = False
+        self.quic_block = False
         self.saved_proxy = {}
         self.saved_dns = {}
         self.row_labels = []
@@ -332,6 +335,7 @@ class App:
         self.mk_btn("bench", 532, self.bench)
         self.btn_sysproxy = self.mk_btn("syspx_off", 568, self.toggle_sysproxy)
         self.btn_dns = self.mk_btn("dns_off", 604, self.toggle_dns)
+        self.btn_quic = self.mk_btn("quic_off", 640, self.toggle_quic)
         self.lbl_footer = tk.Label(root, font=("Segoe UI", 8))
         self.lbl_footer.place(x=0, y=676, width=300)
         self.btn_settings = tk.Button(root, command=self.open_settings,
@@ -342,6 +346,7 @@ class App:
             self._tray_setup()
             root.bind("<Unmap>", self._on_minimize)
         root.protocol("WM_DELETE_WINDOW", self._on_x)
+        self.quic_block = self.quic_active()
         self.apply_theme()
         self.apply_lang()
         self._refresh_info()
@@ -416,7 +421,8 @@ class App:
             idx = old.index(cur)
         self.cmb_mode.set(self.modes()[idx])
         keymap = {"analyze": None, "lan_off": None, "lan_on": None, "bench": None,
-                  "syspx_off": None, "syspx_on": None, "dns_off": None, "dns_on": None}
+                  "syspx_off": None, "syspx_on": None, "dns_off": None, "dns_on": None,
+                  "quic_off": None, "quic_on": None}
         for b, key in self.menu_btns:
             if key == "lan_off":
                 b.configure(text=self.S("lan_on") if self.lan_share else self.S("lan_off"))
@@ -424,6 +430,8 @@ class App:
                 b.configure(text=self.S("syspx_on") if self.sys_proxy else self.S("syspx_off"))
             elif key == "dns_off":
                 b.configure(text=self.S("dns_on") if self.dns_mode else self.S("dns_off"))
+            elif key == "quic_off":
+                b.configure(text=self.S("quic_on") if self.quic_block else self.S("quic_off"))
             elif key in keymap:
                 b.configure(text=self.S(key))
         self._refresh_info()
@@ -435,11 +443,53 @@ class App:
             "motor": self.engine,
             "tepsiye_kapat": self.close_to_tray,
             "durunca_proxy_kapat": self.auto_off_sysproxy,
+            "quic_engelle": self.quic_block,
             "profil": self.cmb_profile.get(),
             "mod": self.cmb_mode.get(),
             "gecikme": int(float(self.scl.get())),
         })
         save_config(self.cfg)
+
+    QUIC_RULE = "DPIVPN-QUIC"
+
+    def quic_active(self):
+        # Kural var ve etkin mi? (gösterme admin istemez)
+        try:
+            r = subprocess.run(["netsh", "advfirewall", "firewall", "show", "rule",
+                                f"name={self.QUIC_RULE}"],
+                               capture_output=True, text=True, timeout=15,
+                               creationflags=NO_WINDOW, errors="replace")
+            out = r.stdout
+            return "Enabled:" in out and "Yes" in out and "No rules match" not in out
+        except Exception:
+            return False
+
+    def toggle_quic(self):
+        # QUIC (UDP 443) proxy dışından kaçar; engellenince site TCP'ye düşer.
+        import ctypes
+        try:
+            if not self.quic_block:
+                cmd = (f'netsh advfirewall firewall add rule name="{self.QUIC_RULE}" '
+                       f'dir=out action=block protocol=UDP remoteport=443')
+                ret = ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", "powershell",
+                    f'-NoProfile -Command "{cmd}"', None, 0)
+                if ret <= 32:
+                    return
+                self.quic_block = True
+                self.btn_quic.configure(text=self.S("quic_on"), fg=GREEN)
+                self.log("[ui] QUIC engellendi (UDP 443) — siteler TCP'ye duser")
+            else:
+                cmd = f'netsh advfirewall firewall delete rule name="{self.QUIC_RULE}"'
+                ctypes.windll.shell32.ShellExecuteW(
+                    None, "runas", "powershell",
+                    f'-NoProfile -Command "{cmd}"', None, 0)
+                self.quic_block = False
+                self.btn_quic.configure(text=self.S("quic_off"), fg=self.T["INK"])
+                self.log("[ui] QUIC engeli kaldirildi")
+            self.persist()
+        except Exception as e:
+            messagebox.showerror("QUIC", str(e))
 
     def open_settings(self):
         win = tk.Toplevel(self.root)

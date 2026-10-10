@@ -172,6 +172,57 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
                 Ok(Ok(m)) => buf.extend_from_slice(&tls[..m]),
             }
         }
+    } else if head.len() >= 4 && http_method(&head) {
+        // Düz HTTP (https değil): absolute-URI ya da Host başlığından hedefi bul,
+        // isteği ortadan bölerek ilet (Host DPI'dan gizlenir), sonra relay.
+        let mut raw = head.clone();
+        while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+            if raw.len() > 16384 {
+                return;
+            }
+            let mut more = vec![0u8; 1024];
+            match tokio::time::timeout(Duration::from_secs(5), inbound.read(&mut more)).await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return,
+                Ok(Ok(m)) => raw.extend_from_slice(&more[..m]),
+            }
+        }
+        let target = match force_target.clone() {
+            Some(f) => f,
+            None => match plain_http_target(&raw) {
+                Some(t) => t,
+                None => return,
+            },
+        };
+        println!("[+] hedef(http): {target}");
+        let mut outbound = match TcpStream::connect(&target).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[-] bağlanamadı {target}: {e}");
+                return;
+            }
+        };
+        let _ = outbound.set_nodelay(true);
+        stats.conns.fetch_add(1, Ordering::Relaxed);
+        // ortadan böl (16B altı istekler tek parça)
+        let cut = raw.len() / 2;
+        let (first, second) = if raw.len() >= 16 && cut > 0 && cut < raw.len() {
+            (&raw[..cut], &raw[cut..])
+        } else {
+            (&raw[..], &[][..])
+        };
+        let mut pre = 0u64;
+        for p in [first, second] {
+            if p.is_empty() {
+                continue;
+            }
+            if let Err(e) = outbound.write_all(p).await {
+                eprintln!("[-] yazma hatası: {e}");
+                return;
+            }
+            pre += p.len() as u64;
+        }
+        relay(inbound, outbound, stats, &target, pre, quiet).await;
+        return;
     } else {
         buf = head;
     }
@@ -223,15 +274,77 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
     let _ = total;
 
     // Sonrası: çift yönlü kopyala (bayt sayaçlı)
+    relay(inbound, outbound, stats, &target, total as u64, quiet).await;
+}
+
+/// Çift yönlü relay + sayaç. total: önceden yazılmış bayt (bölünmüş hello).
+async fn relay(
+    mut inbound: TcpStream,
+    mut outbound: TcpStream,
+    stats: Arc<Stats>,
+    target: &str,
+    pre_written: u64,
+    quiet: bool,
+) {
     let (mut ri, mut wi) = inbound.split();
     let (mut ro, mut wo) = outbound.split();
     let c2s = tokio::io::copy(&mut ri, &mut wo);
     let s2c = tokio::io::copy(&mut ro, &mut wi);
     let (up, down) = tokio::join!(c2s, s2c);
-    stats.bytes_up.fetch_add(up.unwrap_or(0) + total as u64, Ordering::Relaxed);
+    stats.bytes_up.fetch_add(up.unwrap_or(0) + pre_written, Ordering::Relaxed);
     stats.bytes_down.fetch_add(down.unwrap_or(0), Ordering::Relaxed);
     if !quiet {
         println!("[.] bağlantı kapandı: {target}");
+    }
+}
+
+/// Düz HTTP metodu mu? ("GET /...", "POST http://...").
+fn http_method(buf: &[u8]) -> bool {
+    const METHODS: [&[u8]; 7] = [b"GET ", b"POST ", b"HEAD ", b"PUT ", b"DELETE ", b"OPTIONS ", b"PATCH "];
+    METHODS.iter().any(|m| buf.len() >= m.len() && buf[..m.len()].eq_ignore_ascii_case(m))
+}
+
+/// Düz HTTP isteğinden hedef çıkar: absolute-URI ya da Host başlığı. "host:80" döner.
+fn plain_http_target(header: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(header);
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or("");
+    let mut parts = first.split_whitespace();
+    let _method = parts.next()?;
+    let target = parts.next()?;
+    let hostport = if let Some(rest) = target.strip_prefix("http://") {
+        rest.split('/').next().unwrap_or("").to_string()
+    } else if target.starts_with('/') {
+        // origin-form: Host başlığı şart
+        let mut h = String::new();
+        for line in lines {
+            let l = line.trim();
+            if l.len() > 5 && l[..5].eq_ignore_ascii_case("host:") {
+                h = l[5..].trim().to_string();
+                break;
+            }
+            if l.is_empty() {
+                break;
+            }
+        }
+        h
+    } else {
+        return None;
+    };
+    if hostport.is_empty() {
+        return None;
+    }
+    let clean: String = hostport
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == ':')
+        .collect();
+    if clean.is_empty() {
+        return None;
+    }
+    if clean.contains(':') {
+        Some(clean)
+    } else {
+        Some(format!("{clean}:80"))
     }
 }
 

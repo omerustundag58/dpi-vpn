@@ -48,6 +48,8 @@ class DpiVpnService : VpnService() {
     private var startMs = 0L
     private var mode = 0
     private var profile = 0
+    // QUIC (UDP 443) tünel dışından kaçar; engellenince uygulama TCP/TLS'ye düşer.
+    private var quicBlock = true
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "DISCONNECT") {
@@ -58,6 +60,7 @@ class DpiVpnService : VpnService() {
         profile = (intent?.getIntExtra("profile", 0) ?: 0).coerceIn(0, 7)
         mode = (intent?.getIntExtra("mode", 0) ?: 0).coerceIn(0, 2)
         val customDns = intent?.getBooleanExtra("custom_dns", false) ?: false
+        quicBlock = intent?.getBooleanExtra("quic_block", true) ?: true
         @Suppress("UNCHECKED_CAST")
         val allowed = intent?.getStringArrayListExtra("allowed_apps") ?: arrayListOf()
         startTun(customDns, allowed)
@@ -71,7 +74,9 @@ class DpiVpnService : VpnService() {
             .addAddress("10.0.0.2", 32)
             .addDnsServer(if (customDns) "1.1.1.1" else "8.8.8.8")
             .addRoute("0.0.0.0", 0)
+            .addRoute("::", 0) // IPv6 da tünele girsin (sızıntı yok)
             .setMtu(1500)
+        // Not: allowBypass() çağrılmadığı sürece hiçbir uygulama tüneli atlayamaz (varsayılan kapalı).
         for (pkg in allowed) {
             try { b.addAllowedApplication(pkg) } catch (_: Exception) {}
         }
@@ -165,7 +170,9 @@ class DpiVpnService : VpnService() {
 
     private fun dispatch(pkt: ByteArray, n: Int) {
         if (n < 20) return
-        if ((pkt[0].toInt() ushr 4) != 4) return // yalnızca IPv4
+        val ver = pkt[0].toInt() ushr 4
+        if (ver == 6) return // IPv6 tünele girer ama iletilmez: sızıntı kapalı, uygulama IPv4'e düşer
+        if (ver != 4) return
         val ihl = (pkt[0].toInt() and 0x0F) * 4
         if (n < ihl) return
         val proto = pkt[9].toInt() and 0xFF
@@ -223,6 +230,8 @@ class DpiVpnService : VpnService() {
             try {
                 if (!conn.firstPayloadDone && (dstPort == 443 || dstPort == 8443) && isTlsHello(data)) {
                     sendSplit(conn, data)
+                } else if (!conn.firstPayloadDone && dstPort == 80) {
+                    sendPlainSplit(conn, data) // HTTP Host başlığı da bölünür
                 } else {
                     writeAll(conn.channel, data)
                 }
@@ -296,6 +305,26 @@ class DpiVpnService : VpnService() {
             else -> DpiJni.splitRecords(data)       // Hızlı/Dengeli: record-split
         }
         val delay = if (mode == 1) delayMs else 0L
+        writeParts(conn, parts, delay)
+    }
+
+    // Düz metin (HTTP) ilk yükü: ortadan ikiye, gerekirse gecikmeli.
+    // Host başlığı iki segmente dağılınca saf DPI göremez.
+    private fun sendPlainSplit(conn: TcpConn, data: ByteArray) {
+        if (data.size < 16) {
+            writeAll(conn.channel, data)
+            return
+        }
+        val cut = data.size / 2
+        val delay = if (mode == 1) PROFILE_DELAY[profile] else 0L
+        writeAll(conn.channel, data.copyOfRange(0, cut))
+        if (delay > 0) {
+            try { Thread.sleep(delay) } catch (_: InterruptedException) {}
+        }
+        writeAll(conn.channel, data.copyOfRange(cut, data.size))
+    }
+
+    private fun writeParts(conn: TcpConn, parts: Array<ByteArray>, delay: Long) {
         for ((i, p) in parts.withIndex()) {
             if (p.isNotEmpty()) writeAll(conn.channel, p)
             if (i == 0 && delay > 0 && parts.size > 1) {
@@ -382,6 +411,7 @@ class DpiVpnService : VpnService() {
         if (n < ihl + 8) return
         val srcPort = IpUtil.getU16(pkt, ihl)
         val dstPort = IpUtil.getU16(pkt, ihl + 2)
+        if (quicBlock && dstPort == 443) return // QUIC düşürülür -> TCP'ye fallback
         val ulen = IpUtil.getU16(pkt, ihl + 4)
         if (ulen < 8 || n < ihl + ulen) return
         val payload = pkt.copyOfRange(ihl + 8, ihl + ulen)

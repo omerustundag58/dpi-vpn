@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var profileDropdown: AutoCompleteTextView
     private lateinit var modeDropdown: AutoCompleteTextView
     private lateinit var dnsSwitch: MaterialSwitch
+    private lateinit var quicSwitch: MaterialSwitch
     private lateinit var profiles: Array<String>
     private lateinit var modes: Array<String>
 
@@ -59,6 +60,7 @@ class MainActivity : Activity() {
         profileDropdown = findViewById(R.id.profileDropdown)
         modeDropdown = findViewById(R.id.modeDropdown)
         dnsSwitch = findViewById(R.id.dnsSwitch)
+        quicSwitch = findViewById(R.id.quicSwitch)
         val startButton: MaterialButton = findViewById(R.id.startButton)
         val stopButton: MaterialButton = findViewById(R.id.stopButton)
         val pickAppsButton: MaterialButton = findViewById(R.id.pickAppsButton)
@@ -72,12 +74,14 @@ class MainActivity : Activity() {
         profileDropdown.setText(profiles[prefs.getInt("profile", 0).coerceIn(profiles.indices)], false)
         modeDropdown.setText(modes[prefs.getInt("mode", 0).coerceIn(modes.indices)], false)
         dnsSwitch.isChecked = prefs.getBoolean("custom_dns", false)
+        quicSwitch.isChecked = prefs.getBoolean("quic_block", true)
 
         startButton.setOnClickListener {
             prefs.edit()
                 .putInt("profile", profiles.indexOf(profileDropdown.text.toString()).coerceAtLeast(0))
                 .putInt("mode", modes.indexOf(modeDropdown.text.toString()).coerceAtLeast(0))
                 .putBoolean("custom_dns", dnsSwitch.isChecked)
+                .putBoolean("quic_block", quicSwitch.isChecked)
                 .apply()
             askNotifPermission()
             val prepare = VpnService.prepare(this)
@@ -119,6 +123,7 @@ class MainActivity : Activity() {
             putExtra("profile", prefs.getInt("profile", 0))
             putExtra("mode", prefs.getInt("mode", 0))
             putExtra("custom_dns", prefs.getBoolean("custom_dns", false))
+            putExtra("quic_block", prefs.getBoolean("quic_block", true))
             putStringArrayListExtra("allowed_apps", ArrayList(
                 prefs.getStringSet("allowed_apps", emptySet()) ?: emptySet()
             ))
