@@ -1,9 +1,27 @@
 # DPI VPN — Türkiye
 
+[![Sürüm](https://img.shields.io/github/v/release/omerustundag58/dpi-vpn)](https://github.com/omerustundag58/dpi-vpn/releases)
+[![Lisans](https://img.shields.io/badge/lisans-GPL--3.0--or--later-blue)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-green)]()
+
 Derin paket incelemesi (DPI) ile uygulanan erişim engellerini aşan,
 özgür ve açık kaynaklı VPN. Windows + Android. Kayıt yok, hesap yok.
 
-![Lisans](https://img.shields.io/badge/lisans-GPL--3.0--or--later-blue)
+![DPI VPN](docs/banner.png)
+
+## Nasıl çalışır?
+
+```mermaid
+flowchart LR
+    App[Uygulama / Tarayıcı] -->|TLS ClientHello| Core{dpi-core}
+    Core -->|SNI ortasından ikiye| R1[TLS kaydı 1]
+    Core -->|kalan| R2[TLS kaydı 2]
+    R1 --> DPI[DPI kutusu]
+    R2 --> DPI
+    DPI -->|tek kaydı okur, SNI'yi göremez| Net[Geçti ✓]
+    R1 -.->|sırayla| Sunucu[Sunucu]
+    R2 -.->|birleşir| Sunucu
+```
 
 ## Özellikler
 
@@ -22,7 +40,8 @@ Derin paket incelemesi (DPI) ile uygulanan erişim engellerini aşan,
 
 ## Hızlı başlangıç (Windows)
 
-`share/DPI-VPN-Turkiye.exe` — kurulum istemez.
+[**Son sürümü indir**](https://github.com/omerustundag58/dpi-vpn/releases/latest)
+(`DPI-VPN-Turkiye.exe` — kurulum istemez).
 
 1. BAŞLAT → 2. Firefox HTTPS Proxy: `127.0.0.1:8888` → 3. Sistem Proxy +
    DNS Modu ile Discord/Roblox uygulamaları da geçer.
