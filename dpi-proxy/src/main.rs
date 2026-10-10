@@ -97,6 +97,14 @@ fn parse_args() -> Config {
     parse_args_from(&env::args().collect::<Vec<_>>())
 }
 
+/// CONNECT/SNI'dan çıplak host çıkar (portsuz, küçük harf değil — is_excluded halleder).
+fn host_of(connect_host: &Option<String>, buf: &[u8], sni: Option<(usize, usize)>) -> Option<String> {
+    if let Some(h) = connect_host {
+        return h.split(':').next().map(|s| s.to_string());
+    }
+    sni.map(|(s, e)| String::from_utf8_lossy(&buf[s..e]).to_string())
+}
+
 /// Önceden parse edilmiş SNI ile hedef üret (hızlı yol, ikinci parse yok).
 /// Test edilebilir saf fonksiyon.
 fn resolve_target_with_sni(
@@ -203,9 +211,11 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
         };
         let _ = outbound.set_nodelay(true);
         stats.conns.fetch_add(1, Ordering::Relaxed);
+        // muaf hostsa bölmeden tek parça (devlet/yerli hızlı geçer)
+        let plain_excluded = target.split(':').next().map(|h| dpi_core::is_excluded(h)).unwrap_or(false);
         // ortadan böl (16B altı istekler tek parça)
         let cut = raw.len() / 2;
-        let (first, second) = if raw.len() >= 16 && cut > 0 && cut < raw.len() {
+        let (first, second) = if !plain_excluded && raw.len() >= 16 && cut > 0 && cut < raw.len() {
             (&raw[..cut], &raw[cut..])
         } else {
             (&raw[..], &[][..])
@@ -229,12 +239,18 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
 
     // Hızlı yol: tek parse ile SNI + parçalar (Android'de pil/CPU dostu).
     let strategy_owned = strategy;
-    let (sni_opt, parts) = dpi_core::split_once(&buf, strategy_owned);
-    let delay = match strategy_owned {
+    let (sni_opt, mut parts) = dpi_core::split_once(&buf, strategy_owned);
+    let mut delay = match strategy_owned {
         Strategy::SplitWithDelay { delay_ms, .. } => delay_ms,
         Strategy::RecordSplit { delay_ms } => delay_ms,
         _ => 0,
     };
+    // Muaf host (devlet/yerli): bölmeden direkt ilet — yavaşlama yok.
+    let excluded = host_of(&connect_host, &buf, sni_opt).map(|h| dpi_core::is_excluded(&h)).unwrap_or(false);
+    if (excluded) {
+        parts = vec![buf.clone()];
+        delay = 0;
+    }
 
     let target = match &connect_host {
         // CONNECT yolunda hedef başlıktan gelir (force-target testleri ezer)

@@ -11,4 +11,6 @@ object DpiJni {
     external fun shouldProcess(port: Int, first: ByteArray): Boolean
     external fun splitRecords(packet: ByteArray): Array<ByteArray>
     external fun splitTcp(packet: ByteArray, delayMs: Long): Array<ByteArray>
+    /** SNI muaf listede mi (devlet/yerli)? O zaman bölmeden direkt ilet. */
+    external fun isExcluded(packet: ByteArray): Boolean
 }

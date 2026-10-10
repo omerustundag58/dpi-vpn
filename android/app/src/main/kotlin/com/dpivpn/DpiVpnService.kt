@@ -228,10 +228,16 @@ class DpiVpnService : VpnService() {
             if (start != conn.clientSeq) return // boşluk — bekle
             val data = pkt.copyOfRange(off, off + len)
             try {
-                if (!conn.firstPayloadDone && (dstPort == 443 || dstPort == 8443) && isTlsHello(data)) {
+                if (!conn.firstPayloadDone && DpiJni.isExcluded(data)) {
+                    writeAll(conn.channel, data) // muaf (devlet/yerli): direkt, yavaşlama yok
+                } else if (!conn.firstPayloadDone && (dstPort == 443 || dstPort == 8443) && isTlsHello(data)) {
                     sendSplit(conn, data)
                 } else if (!conn.firstPayloadDone && dstPort == 80) {
-                    sendPlainSplit(conn, data) // HTTP Host başlığı da bölünür
+                    if (httpHostExcluded(data)) {
+                        writeAll(conn.channel, data) // muaf host: direkt
+                    } else {
+                        sendPlainSplit(conn, data) // HTTP Host başlığı da bölünür
+                    }
                 } else {
                     writeAll(conn.channel, data)
                 }
@@ -297,6 +303,26 @@ class DpiVpnService : VpnService() {
 
     private fun isTlsHello(data: ByteArray): Boolean =
         data.size >= 6 && data[0] == 0x16.toByte() && data[5] == 0x01.toByte()
+
+    // HTTP Host başlığı muaf listede mi? (lib'deki 4 sonek ile aynı)
+    private fun httpHostExcluded(data: ByteArray): Boolean {
+        if (data.size > 2048) return false
+        val text = try { String(data, Charsets.US_ASCII) } catch (_: Exception) { return false }
+        for (line in text.lineSequence()) {
+            val t = line.trim()
+            if (t.length > 5 && t.substring(0, 5).equals("host:", ignoreCase = true)) {
+                val h = t.substring(5).trim().trimEnd(':').lowercase().trimEnd('.')
+                // port varsa at
+                val host = h.split(':')[0]
+                return host == "gov.tr" || host.endsWith(".gov.tr") ||
+                    host == "com.tr" || host.endsWith(".com.tr") ||
+                    host == "google.com" || host.endsWith(".google.com") ||
+                    host == "googleapis.com" || host.endsWith(".googleapis.com")
+            }
+            if (t.isEmpty()) break
+        }
+        return false
+    }
 
     private fun sendSplit(conn: TcpConn, data: ByteArray) {
         val delayMs = PROFILE_DELAY[profile]

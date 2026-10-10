@@ -161,6 +161,8 @@ NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
 def config_path():
+    if os.environ.get("DPIVPN_CONFIG"):
+        return os.environ["DPIVPN_CONFIG"]
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
     d = os.path.join(base, "DPIVPN")
     os.makedirs(d, exist_ok=True)

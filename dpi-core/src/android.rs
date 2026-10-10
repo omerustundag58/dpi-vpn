@@ -65,6 +65,26 @@ fn read_bytes(env: &mut JNIEnv, arr: JByteArray) -> Option<Vec<u8>> {
     env.convert_byte_array(arr).ok()
 }
 
+/// SNI muaf listede mi? (DpiJni.isExcluded)
+#[no_mangle]
+pub extern "system" fn Java_com_dpivpn_DpiJni_isExcluded(
+    mut env: JNIEnv,
+    _class: JClass,
+    packet: JByteArray,
+) -> jboolean {
+    let yes = read_bytes(&mut env, packet)
+        .and_then(|p| {
+            let (s, e) = find_sni(&p)?;
+            Some(crate::is_excluded(&String::from_utf8_lossy(&p[s..e])))
+        })
+        .unwrap_or(false);
+    if yes {
+        1
+    } else {
+        0
+    }
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_dpivpn_DpiJni_dpiVersion(
     mut env: JNIEnv,

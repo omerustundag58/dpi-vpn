@@ -209,6 +209,18 @@ pub fn fast_strategy() -> Strategy {
     Strategy::Split { split_at: 2 }
 }
 
+/// Tünel dışı bırakılacak yerli/düşük riskli alanlar.
+/// Devlet (.gov.tr), yerli (.com.tr) ve altyapı (google) trafiği
+/// bölünmeden direkt iletilir — hem hızlı hem gereksiz işlem yok.
+/// Kaynak liste: zapret-win-turkey config/excludelist.txt
+const EXCLUDED_SUFFIXES: [&str; 4] = ["gov.tr", "com.tr", "google.com", "googleapis.com"];
+
+/// host bu listeye giriyor mu? (alt alan adları dahil)
+pub fn is_excluded(host: &str) -> bool {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    EXCLUDED_SUFFIXES.iter().any(|s| h == *s || h.ends_with(&format!(".{s}")))
+}
+
 /// Tek parse ile SNI + parçaları döndürür (hızlı yol).
 /// Ayrı ayrı `find_sni` + `split_client_hello` çağırmak paketi 2 kez
 /// parse eder; bu fonksiyon 1 kez eder. Android'de pil/CPU dostu.
@@ -707,6 +719,19 @@ mod tests {
         assert_eq!(sni.map(|(s, e)| &pkt[s..e]), Some(b"hizli-test.com".as_slice()));
         assert_eq!(parts.len(), 2);
         assert_eq!(parts.concat(), pkt);
+    }
+
+    #[test]
+    fn excluded_suffixes() {
+        // devlet + yerli direkt geçer
+        for h in ["turkiye.gov.tr", "GOV.TR", "ornek.com.tr", "google.com",
+                  "mail.google.com", "fonts.googleapis.com", "turkiye.gov.tr."] {
+            assert!(is_excluded(h), "{h} muaf olmalı");
+        }
+        // sansürlüler tünelde kalır — benzer isimler kandırmamalı
+        for h in ["discord.com", "govtrevil.com", "fakegoogle.com.tr.evil.org", "", "com"] {
+            assert!(!is_excluded(h), "{h} muaf OLMAMALI");
+        }
     }
 
     #[test]
