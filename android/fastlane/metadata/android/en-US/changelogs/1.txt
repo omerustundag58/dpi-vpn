@@ -1,0 +1,1 @@
+İlk F-Droid sürümü: record-split çekirdek, 8 ISS profili, uygulama seçimi, DNS modu.

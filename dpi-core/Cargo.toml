@@ -1,0 +1,11 @@
+[package]
+name = "dpi-core"
+version = "0.1.0"
+edition = "2021"
+description = "Ortak DPI bypass çekirdeği - Windows + Android (Flutter Rust bridge ile kullanılacak)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"

@@ -1,0 +1,27 @@
+# Rust / Python
+target/
+__pycache__/
+*.spec
+build/
+dist/
+share/
+
+# Android
+.gradle/
+local.properties
+*.iml
+android/app/build/
+android/app/release/
+*.ap_
+*.apk
+*.aab
+*.hprof
+
+# F-Droid dışı ikililer (lisans belirsiz, depoya girmez)
+vendor/
+*.sys
+WinDivert*.dll
+
+# Derleme artıkları
+*.log
+.DS_Store

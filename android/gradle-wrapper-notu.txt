@@ -1,0 +1,4 @@
+// Gradle sarmalayıcı notu: gradlew betiği depoda yok, ilk derlemede gradle-8.9 indirilir.
+Gradle 8.9 wrapper dağıtımı gradle/wrapper/gradle-wrapper.properties içindeki
+distributionUrl ile otomatik indirilir. gradlew betiğini resmi Gradle 8.9
+dağıtımından alın veya `gradle wrapper --gradle-version 8.9` ile üretin.

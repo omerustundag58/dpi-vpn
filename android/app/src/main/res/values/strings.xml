@@ -1,0 +1,33 @@
+<!-- Türkçe arayüz metinleri: profiller, modlar, durum ve düğmeler. -->
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DPI VPN</string>
+    <string name="profile_label">Profil (ISS)</string>
+    <string name="mode_label">Mod</string>
+    <string name="dns_label">Özel DNS (1.1.1.1)</string>
+    <string name="start">BAŞLAT</string>
+    <string name="stop">DURDUR</string>
+    <string name="pick_apps">Uygulama Seç</string>
+    <string name="save">Kaydet</string>
+    <string name="status_stopped">Durduruldu</string>
+    <string name="status_running">Çalışıyor</string>
+    <string name="stats_empty">Henüz veri yok</string>
+    <string name="stats_format">Gönderilen: %1$d bayt • Alınan: %2$d bayt • Süre: %3$d sn</string>
+    <string name="vpn_denied">VPN izni reddedildi</string>
+
+    <string-array name="profiles">
+        <item>Türk Telekom</item>
+        <item>TT Alternatif</item>
+        <item>Superonline</item>
+        <item>SOL Alternatif</item>
+        <item>Vodafone</item>
+        <item>Turkcell Mobil</item>
+        <item>Vodafone Mobil</item>
+        <item>Telekom Mobil</item>
+    </string-array>
+    <string-array name="modes">
+        <item>Hızlı</item>
+        <item>Dengeli</item>
+        <item>Parçala</item>
+    </string-array>
+</resources>

@@ -1,0 +1,13 @@
+[package]
+name = "dpi-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Windows'ta sürücüsüz test için kullanıcı-alanı DPI bypass TCP proxy"
+
+[[bin]]
+name = "dpi-proxy"
+path = "src/main.rs"
+
+[dependencies]
+dpi-core = { path = "../dpi-core" }
+tokio = { version = "1", features = ["full"] }

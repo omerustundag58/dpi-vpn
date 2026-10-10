@@ -1,0 +1,10 @@
+DPI VPN, derin paket incelemesi (DPI) ile uygulanan erişim engellerini aşan özgür ve açık kaynaklı bir VPN uygulamasıdır.
+
+* Kayıt yok, hesap yok — internete doğrudan bağlanır
+* TLS record-split tekniği ile SNI tabanlı engelleri aşar
+* 8 Türkiye ISS profili (Türk Telekom, Vodafone, Superonline ve diğerleri)
+* Uygulama bazlı VPN: yalnızca seçtiğin uygulamalar tünelden geçer
+* DNS koruması (1.1.1.1) ve canlı trafik istatistiği
+* Rust çekirdek + native Android arayüzü
+
+F-Droid sürümü yalnızca Rust motorunu içerir; sürücülü WinDivert motoru F-Droid derlemesine dahil değildir.

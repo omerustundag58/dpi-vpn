@@ -1,0 +1,3 @@
+[workspace]
+members = ["dpi-core", "dpi-proxy"]
+resolver = "2"
