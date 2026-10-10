@@ -1,36 +1,41 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
-// Ana ekran: profil/mod seçimi, BAŞLAT/DURDUR, durum ve istatistik gösterimi.
+﻿// Ana ekran: profil/mod seçimi, BAŞLAT/DURDUR, durum ve istatistik gösterimi.
 package com.dpivpn
 
+import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import android.widget.ArrayAdapter
-import android.widget.Button
-import android.widget.Spinner
-import android.widget.Switch
+import android.widget.AutoCompleteTextView
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.materialswitch.MaterialSwitch
 
 class MainActivity : Activity() {
 
     companion object {
         const val ACTION_STATE_UPDATE = "com.dpivpn.STATE_UPDATE"
         private const val VPN_REQUEST = 1001
+        private const val NOTIF_REQUEST = 1002
         private const val PREFS = "dpi_prefs"
     }
 
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
-    private lateinit var profileSpinner: Spinner
-    private lateinit var modeSpinner: Spinner
-    private lateinit var dnsSwitch: Switch
+    private lateinit var statusDot: android.view.View
+    private lateinit var profileDropdown: AutoCompleteTextView
+    private lateinit var modeDropdown: AutoCompleteTextView
+    private lateinit var dnsSwitch: MaterialSwitch
+    private lateinit var profiles: Array<String>
+    private lateinit var modes: Array<String>
 
-    // Servisten gelen bayt/süre yayınını alıp istatistik satırını günceller.
     private val stateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != ACTION_STATE_UPDATE) return
@@ -39,6 +44,7 @@ class MainActivity : Activity() {
             val secs = intent.getLongExtra("duration_sec", 0L)
             val running = intent.getBooleanExtra("running", false)
             statusText.text = if (running) getString(R.string.status_running) else getString(R.string.status_stopped)
+            statusDot.setBackgroundResource(if (running) R.drawable.dot_green else R.drawable.dot_red)
             statsText.text = getString(R.string.stats_format, up, down, secs)
         }
     }
@@ -49,33 +55,31 @@ class MainActivity : Activity() {
 
         statusText = findViewById(R.id.statusText)
         statsText = findViewById(R.id.statsText)
-        profileSpinner = findViewById(R.id.profileSpinner)
-        modeSpinner = findViewById(R.id.modeSpinner)
+        statusDot = findViewById(R.id.statusDot)
+        profileDropdown = findViewById(R.id.profileDropdown)
+        modeDropdown = findViewById(R.id.modeDropdown)
         dnsSwitch = findViewById(R.id.dnsSwitch)
-        val startButton: Button = findViewById(R.id.startButton)
-        val stopButton: Button = findViewById(R.id.stopButton)
-        val pickAppsButton: Button = findViewById(R.id.pickAppsButton)
+        val startButton: MaterialButton = findViewById(R.id.startButton)
+        val stopButton: MaterialButton = findViewById(R.id.stopButton)
+        val pickAppsButton: MaterialButton = findViewById(R.id.pickAppsButton)
 
-        val profiles = resources.getStringArray(R.array.profiles)
-        profileSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, profiles).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
-        val modes = resources.getStringArray(R.array.modes)
-        modeSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, modes).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
+        profiles = resources.getStringArray(R.array.profiles)
+        modes = resources.getStringArray(R.array.modes)
+        profileDropdown.setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, profiles))
+        modeDropdown.setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, modes))
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        profileSpinner.setSelection(prefs.getInt("profile", 0).coerceIn(profiles.indices))
-        modeSpinner.setSelection(prefs.getInt("mode", 0).coerceIn(modes.indices))
+        profileDropdown.setText(profiles[prefs.getInt("profile", 0).coerceIn(profiles.indices)], false)
+        modeDropdown.setText(modes[prefs.getInt("mode", 0).coerceIn(modes.indices)], false)
         dnsSwitch.isChecked = prefs.getBoolean("custom_dns", false)
 
         startButton.setOnClickListener {
             prefs.edit()
-                .putInt("profile", profileSpinner.selectedItemPosition)
-                .putInt("mode", modeSpinner.selectedItemPosition)
+                .putInt("profile", profiles.indexOf(profileDropdown.text.toString()).coerceAtLeast(0))
+                .putInt("mode", modes.indexOf(modeDropdown.text.toString()).coerceAtLeast(0))
                 .putBoolean("custom_dns", dnsSwitch.isChecked)
                 .apply()
+            askNotifPermission()
             val prepare = VpnService.prepare(this)
             if (prepare != null) {
                 startActivityForResult(prepare, VPN_REQUEST)
@@ -91,6 +95,15 @@ class MainActivity : Activity() {
         registerReceiverCompat(stateReceiver, IntentFilter(ACTION_STATE_UPDATE))
     }
 
+    // Android 13+ bildirim izni (canlı VPN bildirimi için).
+    private fun askNotifPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIF_REQUEST)
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == VPN_REQUEST) {
@@ -103,8 +116,8 @@ class MainActivity : Activity() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val intent = Intent(this, DpiVpnService::class.java).apply {
             action = "CONNECT"
-            putExtra("profile", profileSpinner.selectedItemPosition)
-            putExtra("mode", modeSpinner.selectedItemPosition)
+            putExtra("profile", prefs.getInt("profile", 0))
+            putExtra("mode", prefs.getInt("mode", 0))
             putExtra("custom_dns", prefs.getBoolean("custom_dns", false))
             putStringArrayListExtra("allowed_apps", ArrayList(
                 prefs.getStringSet("allowed_apps", emptySet()) ?: emptySet()
@@ -112,14 +125,15 @@ class MainActivity : Activity() {
         }
         startService(intent)
         statusText.text = getString(R.string.status_running)
+        statusDot.setBackgroundResource(R.drawable.dot_green)
     }
 
     private fun stopVpn() {
         startService(Intent(this, DpiVpnService::class.java).apply { action = "DISCONNECT" })
         statusText.text = getString(R.string.status_stopped)
+        statusDot.setBackgroundResource(R.drawable.dot_red)
     }
 
-    // API 33+ registerReceiver bayrağı ister; alt sürümlerde eski imza.
     private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)

@@ -30,4 +30,7 @@
         <item>Dengeli</item>
         <item>Parçala</item>
     </string-array>
+    <string name="notif_running">Koruma aktif</string>
+    <string name="notif_stop">Durdur</string>
+    <string name="notif_channel">VPN durumu</string>
 </resources>

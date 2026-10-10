@@ -33,6 +33,9 @@ class DpiVpnService : VpnService() {
         private const val NOTIF_ID = 1
         private const val CH_ID = "dpi_vpn"
         private val PROFILE_DELAY = longArrayOf(4, 3, 5, 3, 0, 1, 0, 5)
+        private val PROFILE_NAMES = arrayOf("Türk Telekom", "TT Alternatif", "Superonline",
+            "SOL Alternatif", "Vodafone", "Turkcell Mobil", "Vodafone Mobil", "Telekom Mobil")
+        private val MODE_NAMES = arrayOf("Hızlı", "Dengeli", "Parçala")
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -84,19 +87,13 @@ class DpiVpnService : VpnService() {
     private fun startFg() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(NotificationChannel(CH_ID, "DPI VPN", NotificationManager.IMPORTANCE_LOW))
+            nm.createNotificationChannel(NotificationChannel(CH_ID,
+                getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW).apply {
+                description = "VPN koruma durumu ve trafik"
+            })
         }
-        val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val nb = if (Build.VERSION.SDK_INT >= 26)
-            Notification.Builder(this, CH_ID)
-        else
-            @Suppress("DEPRECATION") Notification.Builder(this)
-        val notif = nb.setContentTitle("DPI VPN")
-            .setContentText("Koruma aktif")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentIntent(pi)
-            .build()
+        nm.notify(NOTIF_ID, buildNotif(0, 0, 0))
+        val notif = buildNotif(0, 0, 0)
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
@@ -104,16 +101,56 @@ class DpiVpnService : VpnService() {
         }
     }
 
+    // Canlı bildirim: profil/mod + trafik, DURDUR kısayolu.
+    private fun buildNotif(up: Long, down: Long, secs: Long): Notification {
+        val stopPi = PendingIntent.getService(this, 1,
+            Intent(this, DpiVpnService::class.java).apply { action = "DISCONNECT" },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val openPi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val detail = "${PROFILE_NAMES[profile]} • ${MODE_NAMES[mode]}\n" +
+            "↑ ${fmtBytes(up)}  ↓ ${fmtBytes(down)}  •  ${fmtDur(secs)}"
+        val b = if (Build.VERSION.SDK_INT >= 26)
+            Notification.Builder(this, CH_ID)
+        else
+            @Suppress("DEPRECATION") Notification.Builder(this)
+        return b.setContentTitle(getString(R.string.notif_running))
+            .setContentText("${PROFILE_NAMES[profile]} • ↑ ${fmtBytes(up)} ↓ ${fmtBytes(down)}")
+            .setStyle(Notification.BigTextStyle().bigText(detail))
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentIntent(openPi)
+            .addAction(Notification.Action.Builder(null, getString(R.string.notif_stop), stopPi).build())
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun fmtBytes(b: Long): String = when {
+        b < 1024 -> "$b B"
+        b < 1024 * 1024 -> "${b / 1024} KB"
+        else -> "${b / (1024 * 1024)} MB"
+    }
+
+    private fun fmtDur(s: Long): String = "%02d:%02d".format(s / 60, s % 60)
+
     private fun statsLoop() {
+        var tick = 0
         while (running.get()) {
             try { Thread.sleep(2000) } catch (_: InterruptedException) { break }
+            val secs = (System.currentTimeMillis() - startMs) / 1000
             sendBroadcast(Intent(ACTION_UPDATE).apply {
                 putExtra("bytes_up", bytesUp.get())
                 putExtra("bytes_down", bytesDown.get())
-                putExtra("duration_sec", (System.currentTimeMillis() - startMs) / 1000)
+                putExtra("duration_sec", secs)
                 putExtra("running", true)
                 setPackage(packageName)
             })
+            // bildirimi her 6sn'de tazele (pil dostu)
+            if (++tick % 3 == 0) {
+                try {
+                    val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                    nm.notify(NOTIF_ID, buildNotif(bytesUp.get(), bytesDown.get(), secs))
+                } catch (_: Exception) {}
+            }
         }
     }
 

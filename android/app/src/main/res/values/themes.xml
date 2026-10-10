@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Uygulama teması: AppCompat tabanlı açık tema. -->
+<!-- Uygulama teması: Material3 gündüz/gece otomatik. -->
 <resources>
-    <style name="Theme.DpiVpn" parent="Theme.AppCompat.Light.DarkActionBar" />
+    <style name="Theme.DpiVpn" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#2563EB</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondaryContainer">#DBEAFE</item>
+    </style>
 </resources>
