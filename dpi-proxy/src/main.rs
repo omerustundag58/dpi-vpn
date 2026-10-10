@@ -98,9 +98,16 @@ fn parse_args() -> Config {
 }
 
 /// CONNECT/SNI'dan çıplak host çıkar (portsuz, küçük harf değil — is_excluded halleder).
+/// IPv6 köşeli parantezi korunur ([::1] -> "[::1]").
 fn host_of(connect_host: &Option<String>, buf: &[u8], sni: Option<(usize, usize)>) -> Option<String> {
     if let Some(h) = connect_host {
-        return h.split(':').next().map(|s| s.to_string());
+        // sondaki :portu at (IPv6'da son ':' sonrası porttur)
+        let stripped = if h.starts_with('[') {
+            h.split("]:").next().map(|s| format!("{s}]")).unwrap_or_else(|| h.clone())
+        } else {
+            h.split(':').next().unwrap_or(h).to_string()
+        };
+        return Some(stripped);
     }
     sni.map(|(s, e)| String::from_utf8_lossy(&buf[s..e]).to_string())
 }
@@ -160,9 +167,12 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
         }
         let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
         let first_line = String::from_utf8_lossy(&raw[..header_end]).lines().next().unwrap_or("").to_string();
-        // "CONNECT host:port HTTP/1.1"
+        // "CONNECT host:port HTTP/1.1" — IPv6 köşeli parantezli de olabilir ([::1]:443)
         let hostport = first_line.split_whitespace().nth(1).unwrap_or("");
-        let clean: String = hostport.chars().filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == ':').collect();
+        let clean: String = hostport
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == ':' || *c == '[' || *c == ']')
+            .collect();
         if clean.is_empty() || !clean.contains(':') {
             return;
         }
@@ -247,7 +257,7 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
     };
     // Muaf host (devlet/yerli): bölmeden direkt ilet — yavaşlama yok.
     let excluded = host_of(&connect_host, &buf, sni_opt).map(|h| dpi_core::is_excluded(&h)).unwrap_or(false);
-    if (excluded) {
+    if excluded {
         parts = vec![buf.clone()];
         delay = 0;
     }
@@ -352,7 +362,7 @@ fn plain_http_target(header: &[u8]) -> Option<String> {
     }
     let clean: String = hostport
         .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == ':')
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == ':' || *c == '[' || *c == ']')
         .collect();
     if clean.is_empty() {
         return None;

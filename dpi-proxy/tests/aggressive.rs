@@ -95,6 +95,49 @@ fn proxy_bin() -> std::path::PathBuf {
 }
 
 #[tokio::test]
+async fn proxy_connect_ipv6_target() {
+    // Firefox Happy Eyeballs: CONNECT [::1]:port dusurulmemeli.
+    let l = TcpListener::bind("[::1]:0").await.expect("v6 dinle");
+    let port = l.local_addr().unwrap().port();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        if let Ok((mut s, _)) = l.accept().await {
+            let mut all = vec![];
+            let mut buf = [0u8; 4096];
+            while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf)).await {
+                if n == 0 || all.len() > 8192 {
+                    break;
+                }
+                all.extend_from_slice(&buf[..n]);
+                if all.len() >= 50 {
+                    break;
+                }
+            }
+            let _ = tx.send(all);
+        }
+    });
+    let proxy_port = free_port().await;
+    let mut proxy = tokio::process::Command::new(proxy_bin())
+        .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
+               "--delay-ms", "5"])
+        .spawn().unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let hello = fake_client_hello(b"ipv6-test.com");
+    let mut cli = TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await.unwrap();
+    cli.write_all(format!("CONNECT [::1]:{port} HTTP/1.1\r\nHost: [::1]:{port}\r\n\r\n").as_bytes()).await.unwrap();
+    let mut resp = vec![0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(3), cli.read(&mut resp)).await.expect("200 yok").unwrap();
+    assert!(String::from_utf8_lossy(&resp[..n]).contains("200"), "IPv6 CONNECT 200 donmedi");
+    cli.write_all(&hello).await.unwrap();
+    cli.flush().await.unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("timeout").expect("kanal");
+    assert_eq!(got.len(), hello.len(), "IPv6 uzunluk: gelen={} beklenen={}", got.len(), hello.len());
+    assert_eq!(got, hello, "IPv6 hedefe veri bozuk");
+    proxy.kill().await.ok();
+}
+
+#[tokio::test]
 async fn proxy_splits_sni_and_preserves_bytes() {
     let (target_addr, mut rx_data, mut rx_gap) = spawn_fake_target().await;
     let proxy_port = free_port().await;

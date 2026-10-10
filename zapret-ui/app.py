@@ -847,10 +847,13 @@ class App:
                 self.saved_dns = {"alias": alias}
                 # IPv4 + IPv6 birlikte: Windows IPv6 DNS'i tercih eder,
                 # orası değişmezse modem (zehirli) cevap verir.
+                # Ayrıca IPv6 yığını zehirli+zaman aşımlıysa arayüzde kapatılır
+                # (geri dönüşte tekrar açılır) — her şey IPv4 Cloudflare'e düşer.
                 cmd = (f'Set-DnsClientServerAddress -InterfaceAlias "{alias}" '
                        f'-ServerAddresses {DNS_PRIMARY},{DNS_SECONDARY}; '
                        f'Set-DnsClientServerAddress -InterfaceAlias "{alias}" '
-                       f'-ServerAddresses {DNS6_PRIMARY},{DNS6_SECONDARY}')
+                       f'-ServerAddresses {DNS6_PRIMARY},{DNS6_SECONDARY}; '
+                       f'Disable-NetAdapterBinding -InterfaceAlias "{alias}" -ComponentID ms_tcpip6')
                 import ctypes
                 ret = ctypes.windll.shell32.ShellExecuteW(
                     None, "runas", "powershell",
@@ -862,7 +865,8 @@ class App:
                 self.log(f"[ui] dns on ({alias})")
             else:
                 alias = self.saved_dns.get("alias", "")
-                cmd = (f'Set-DnsClientServerAddress -InterfaceAlias "{alias}" -ResetServerAddresses')
+                cmd = (f'Set-DnsClientServerAddress -InterfaceAlias "{alias}" -ResetServerAddresses; '
+                       f'Enable-NetAdapterBinding -InterfaceAlias "{alias}" -ComponentID ms_tcpip6')
                 import ctypes
                 ctypes.windll.shell32.ShellExecuteW(
                     None, "runas", "powershell",
