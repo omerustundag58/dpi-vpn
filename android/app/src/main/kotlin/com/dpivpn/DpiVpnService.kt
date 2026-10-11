@@ -22,6 +22,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
 import java.nio.channels.SocketChannel
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
@@ -50,6 +51,9 @@ class DpiVpnService : VpnService() {
     private var profile = 0
     // QUIC (UDP 443) tünel dışından kaçar; engellenince uygulama TCP/TLS'ye düşer.
     private var quicBlock = true
+    // Bağlantı işleri okuma döngüsünü TIKAMAZ: havuzda koşar (aksi halde her
+    // yeni bağlantı 8sn'ye kadar tüm TUN trafiğini durdururdu).
+    private val pool = Executors.newFixedThreadPool(32)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "DISCONNECT") {
@@ -219,7 +223,8 @@ class DpiVpnService : VpnService() {
         var conn = conns[key]
         if (conn == null) {
             if (!syn || ack) return // veri ortasında katıldık — kuramayız
-            openTcp(key, srcIp, srcPort, dstIp, dstPort, seq, pkt, ihl, hdrLen)
+            // engelleyen connect havuzda: okuma döngüsü asla beklemez
+            pool.execute { openTcp(key, srcIp, srcPort, dstIp, dstPort, seq, pkt, ihl, hdrLen) }
             return
         }
         if (conn.closed) return
@@ -271,6 +276,7 @@ class DpiVpnService : VpnService() {
 
     private fun openTcp(key: String, srcIp: Int, srcPort: Int, dstIp: Int, dstPort: Int,
                         seq: Long, pkt: ByteArray, ihl: Int, hdrLen: Int) {
+        if (conns.containsKey(key)) return // çift SYN yarışı
         val ch = try {
             SocketChannel.open().also {
                 protect(it.socket())
@@ -289,7 +295,7 @@ class DpiVpnService : VpnService() {
         sendTcp(srcIp, dstIp, srcPort, dstPort, conn.ourSeq, conn.clientSeq, 0x12,
             byteArrayOf(), mssOption(mss))
         conn.ourSeq++
-        thread(name = "tcp-$dstPort", isDaemon = true) { relayToTun(conn) }
+        pool.execute { relayToTun(conn) }
     }
 
     private fun relayToTun(conn: TcpConn) {
@@ -451,7 +457,12 @@ class DpiVpnService : VpnService() {
         if (n < ihl + 8) return
         val srcPort = IpUtil.getU16(pkt, ihl)
         val dstPort = IpUtil.getU16(pkt, ihl + 2)
-        if (quicBlock && dstPort == 443) return // QUIC düşürülür -> TCP'ye fallback
+        if (quicBlock && dstPort == 443) {
+            // QUIC düşür + ICMP Port Unreachable: istemci anında TCP'ye düşer,
+            // sessiz drop'taki 200-300ms fallback cezasını ödemez.
+            sendIcmpUnreachable(srcIp, dstIp, srcPort, dstPort, pkt, n, ihl)
+            return
+        }
         val ulen = IpUtil.getU16(pkt, ihl + 4)
         if (ulen < 8 || n < ihl + ulen) return
         val payload = pkt.copyOfRange(ihl + 8, ihl + ulen)
@@ -465,7 +476,7 @@ class DpiVpnService : VpnService() {
                 }
             } catch (_: Exception) { return }
             udpMap[key] = fresh
-            thread(name = "udp-$dstPort", isDaemon = true) {
+            pool.execute {
                 val buf = ByteBuffer.allocate(4096)
                 var idle = 0
                 try {
@@ -511,7 +522,7 @@ class DpiVpnService : VpnService() {
         writeTun(ip + u)
     }
 
-    // ---------- ICMP ping ----------
+    // ---------- ICMP ping + unreachable ----------
     private fun handleIcmp(pkt: ByteArray, n: Int, ihl: Int, srcIp: Int, dstIp: Int) {
         if (n < ihl + 8) return
         if (pkt[ihl] != 8.toByte()) return // yalnızca echo request
@@ -538,6 +549,35 @@ class DpiVpnService : VpnService() {
         writeTun(ip + rep)
     }
 
+    // ICMP Destination Unreachable / Port Unreachable (QUIC'e hızlı fallback için).
+    // RFC 792: IP başlığı + ilk 8 bayt geri gömülür.
+    private fun sendIcmpUnreachable(srcIp: Int, dstIp: Int, srcPort: Int, dstPort: Int,
+                                    orig: ByteArray, n: Int, ihl: Int) {
+        val quote = minOf(28, n - ihl).coerceAtLeast(0)
+        if (quote < 8) return
+        val icmp = ByteArray(8 + quote)
+        icmp[0] = 3 // destination unreachable
+        icmp[1] = 3 // port unreachable
+        orig.copyInto(icmp, 8, ihl, ihl + quote)
+        var sum = 0
+        var i = 0
+        while (i < icmp.size - 1) {
+            sum += ((icmp[i].toInt() and 0xFF) shl 8) or (icmp[i + 1].toInt() and 0xFF)
+            i += 2
+        }
+        if (icmp.size % 2 == 1) sum += (icmp[icmp.size - 1].toInt() and 0xFF) shl 8
+        while (sum ushr 16 != 0) sum = (sum and 0xFFFF) + (sum ushr 16)
+        val c = sum.inv() and 0xFFFF
+        icmp[2] = (c ushr 8).toByte(); icmp[3] = c.toByte()
+        val ip = ByteArray(20)
+        ip[0] = 0x45; ip[1] = 0; ip[8] = 64; ip[9] = 1
+        IpUtil.ipToBytes(dstIp, ip, 12); IpUtil.ipToBytes(srcIp, ip, 16)
+        IpUtil.putU16(ip, 2, 20 + icmp.size)
+        IpUtil.putU16(ip, 4, (Math.random() * 65535).toInt())
+        IpUtil.putU16(ip, 10, IpUtil.ipChecksum(ip, 0, 5))
+        writeTun(ip + icmp)
+    }
+
     @Synchronized
     private fun writeTun(data: ByteArray) {
         try { out ?: FileOutputStream(tun?.fileDescriptor).also { out = it }; out?.write(data) } catch (_: Exception) {}
@@ -545,6 +585,7 @@ class DpiVpnService : VpnService() {
 
     private fun shutdown() {
         running.set(false)
+        try { (pool as java.util.concurrent.ThreadPoolExecutor).queue.clear() } catch (_: Exception) {}
         for (c in conns.values) try { c.channel.close() } catch (_: Exception) {}
         conns.clear()
         for (u in udpMap.values) try { u.close() } catch (_: Exception) {}
