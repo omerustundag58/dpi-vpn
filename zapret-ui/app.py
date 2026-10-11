@@ -354,6 +354,7 @@ class App:
         self.apply_theme()
         self.apply_lang()
         self._refresh_info()
+        self.fade_in()
 
     def S(self, key):
         tr, en = STR[key]
@@ -375,8 +376,23 @@ class App:
         b = tk.Button(self.root, command=cmd, relief="flat", bd=0,
                       highlightthickness=1, cursor="hand2", font=("Segoe UI", 9))
         b.place(x=15, y=y, width=380, height=30)
+        # hover: üzerine gelince aydınlan, çıkınca temaya dön
+        b.bind("<Enter>", lambda _e, w=b: w.configure(
+            bg="#DBEAFE" if self.T is THEMES["acik"] else "#334155"))
+        b.bind("<Leave>", lambda _e, w=b: w.configure(bg=self.T["CARD"]))
         self.menu_btns.append((b, key))
         return b
+
+    def fade_in(self, alpha=0.0):
+        # Açılışta yumuşak belirme (Windows).
+        try:
+            if alpha >= 1.0:
+                self.root.attributes("-alpha", 1.0)
+                return
+            self.root.attributes("-alpha", alpha)
+            self.root.after(25, lambda: self.fade_in(alpha + 0.08))
+        except tk.TclError:
+            pass
 
     def apply_theme(self):
         name = self.theme_name

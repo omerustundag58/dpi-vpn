@@ -30,6 +30,7 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
     private lateinit var statusDot: android.view.View
+    private var pulse: android.animation.AnimatorSet? = null
     private lateinit var profileDropdown: AutoCompleteTextView
     private lateinit var modeDropdown: AutoCompleteTextView
     private lateinit var dnsSwitch: MaterialSwitch
@@ -52,6 +53,7 @@ class MainActivity : Activity() {
             }
             statusText.text = if (running) getString(R.string.status_running) else getString(R.string.status_stopped)
             statusDot.setBackgroundResource(if (running) R.drawable.dot_green else R.drawable.dot_red)
+            if (running) startPulse() else stopPulse()
             statsText.text = getString(R.string.stats_format, up, down, secs)
         }
     }
@@ -143,6 +145,29 @@ class MainActivity : Activity() {
         startService(Intent(this, DpiVpnService::class.java).apply { action = "DISCONNECT" })
         statusText.text = getString(R.string.status_stopped)
         statusDot.setBackgroundResource(R.drawable.dot_red)
+        stopPulse()
+    }
+
+    // Çalışırken durum noktası nabız gibi atar.
+    private fun startPulse() {
+        if (pulse?.isRunning == true) return
+        stopPulse()
+        val sx = android.animation.ObjectAnimator.ofFloat(statusDot, "scaleX", 1f, 1.35f).apply {
+            duration = 700; repeatCount = android.animation.ValueAnimator.INFINITE
+            repeatMode = android.animation.ValueAnimator.REVERSE
+        }
+        val sy = android.animation.ObjectAnimator.ofFloat(statusDot, "scaleY", 1f, 1.35f).apply {
+            duration = 700; repeatCount = android.animation.ValueAnimator.INFINITE
+            repeatMode = android.animation.ValueAnimator.REVERSE
+        }
+        pulse = android.animation.AnimatorSet().apply { playTogether(sx, sy); start() }
+    }
+
+    private fun stopPulse() {
+        pulse?.cancel()
+        pulse = null
+        statusDot.scaleX = 1f
+        statusDot.scaleY = 1f
     }
 
     private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
@@ -155,6 +180,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         try { unregisterReceiver(stateReceiver) } catch (_: Exception) {}
+        try { stopPulse() } catch (_: Exception) {}
         super.onDestroy()
     }
 }
