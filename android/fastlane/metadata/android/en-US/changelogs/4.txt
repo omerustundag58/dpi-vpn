@@ -1,0 +1,1 @@
+Ters Köşe sürümü: ters-sıra gönderim, HoSt kılığı, ICMP hızlı fallback, bağlantı havuzu.

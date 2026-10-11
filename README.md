@@ -27,11 +27,13 @@ flowchart LR
 
 - **TLS record-split** — SNI'ı iki TLS kaydına dağıtır; TCP-birleştirmeli
   DPI kutuları engeli göremez (kanıtlı: Discord/Roblox açıldı)
+- **Ters sıra + SNI-öncesi kesim + HoSt kılığı** — goodbyedpi taktikleri
+  (4. mod: **Ters**)
 - **8 Türkiye ISS profili** — Türk Telekom, Vodafone, Superonline ve diğerleri
   (zapret-win-turkey stratejilerinden uyarlandı)
-- **HTTP CONNECT + düz HTTP proxy** — tarayıcılar doğrudan kullanır
-- **IPv6 CONNECT, muaf listesi** (gov.tr/com.tr/google hızlı geçer),
-  QUIC engelleme, DNS modu (IPv4+IPv6 Cloudflare)
+- **HTTP CONNECT + düz HTTP + IPv6 proxy** — tarayıcılar doğrudan kullanır
+- **Muaf liste** (gov.tr/com.tr/google hızlı geçer), **QUIC engelleme**,
+  **DNS modu** (IPv4+IPv6 Cloudflare)
 - **Windows arayüzü** — tema (açık/koyu/sistem), TR/EN, tepsi simgesi,
   canlı log, hız testi, sistem proxy'si, tek `.exe`
 - **Android uygulaması** — VpnService (TUN), uygulama bazlı VPN,
@@ -74,13 +76,14 @@ git'e girmez).
 ## Yapı
 
 ```
-dpi-core/    Rust çekirdek: SNI bulma, split/record-split, zapret profilleri (OS bağımsız)
+dpi-core/    Rust çekirdek: SNI bulma, split/record-split/ters-sıra, zapret profilleri (OS bağımsız)
 dpi-proxy/   Windows/Linux TCP proxy: CONNECT, düz HTTP, sessiz kip, istatistik
-zapret-ui/   Windows arayüzü (tkinter): tema, dil, tepsi, DNS/proxy/QUIC anahtarları
+dpi-app/     Windows ana arayüz (Tauri + web UI): tema, dil, tepsi, tüm anahtarlar
+zapret-ui/   Windows klasik arayüz (tkinter, yedek)
 android/     Android uygulaması: VpnService TUN, JNI, Material3, F-Droid metadata
-diag.py      DPI tanı scripti: DNS/TCP/bütün/parçalı/proxy probları
-docs/        ZAPRET_TURKEY.md (strateji haritası)
-share/       Dağıtım paketi (exe + KULLANIM.txt) — sürümle güncellenir
+diag.py      DPI tanı scripti: DNS/TCP/orta/önce/ters/proxy probları
+docs/        ZAPRET_TURKEY.md + GOODBYEDPI_MAP.md (strateji haritaları)
+share/       Dağıtım paketi (exe + kurulum + APK + KULLANIM.txt) — sürümle güncellenir
 ```
 
 ## Testler
