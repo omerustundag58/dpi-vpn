@@ -1,0 +1,247 @@
+:root {
+  --bg: #0F172A;
+  --card: #1E293B;
+  --accent: #2563EB;
+  --green: #16A34A;
+  --red: #DC2626;
+  --yellow: #EAB308;
+  --blue: #38BDF8;
+  --text: #F1F5F9;
+  --muted: #94A3B8;
+  --logbg: #0B1220;
+  --border: #334155;
+}
+
+body.light {
+  --bg: #F1F5F9;
+  --card: #FFFFFF;
+  --text: #0F172A;
+  --muted: #475569;
+  --logbg: #E2E8F0;
+  --border: #CBD5E1;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  min-height: 100vh;
+}
+
+body {
+  display: flex;
+  justify-content: center;
+}
+
+#app {
+  width: 410px;
+  max-width: 410px;
+  min-height: 700px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+/* 1. Durum kartı */
+.status-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.dot.running {
+  background: var(--green);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.6); }
+  70% { box-shadow: 0 0 0 10px rgba(22, 163, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+}
+
+.status-text h1 { margin: 0; font-size: 18px; }
+.status-text p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+/* 2. BAŞLAT */
+.run-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 14px;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.08s ease, filter 0.15s ease;
+}
+
+.run-btn.start { background: var(--green); }
+.run-btn.stop { background: var(--red); }
+.run-btn:active { transform: scale(0.96); }
+.run-btn:hover { filter: brightness(1.1); }
+
+/* 3. Ayar kartı */
+.settings-card { display: flex; flex-direction: column; gap: 10px; }
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.row-label { display: flex; align-items: center; gap: 6px; }
+
+select, input[type="range"] { accent-color: var(--accent); }
+
+select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  max-width: 180px;
+}
+
+.range-wrap { display: flex; align-items: center; gap: 8px; }
+.ms { font-size: 12px; color: var(--muted); min-width: 44px; text-align: right; }
+
+/* mavi ? balonu */
+.tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: help;
+  position: relative;
+}
+
+.tip:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 22px;
+  top: -6px;
+  width: max-content;
+  max-width: 220px;
+  white-space: normal;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  z-index: 50;
+}
+
+/* 4. Log */
+.log-card { padding: 8px; }
+#log {
+  background: var(--logbg);
+  border-radius: 6px;
+  height: 170px;
+  overflow-y: auto;
+  padding: 8px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+#log div { word-break: break-word; }
+#log .ok { color: var(--green); }
+#log .warn { color: var(--yellow); }
+#log .err { color: var(--red); }
+#log .info { color: var(--blue); }
+
+/* 5. Buton ızgarası */
+.btn-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.btn {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: transform 0.08s ease, border-color 0.15s ease;
+}
+.btn:hover { border-color: var(--accent); }
+.btn:active { transform: scale(0.96); }
+.btn.on { color: var(--green); border-color: var(--green); font-weight: 700; }
+.btn.small { padding: 6px 10px; font-size: 12px; }
+
+/* 6. Alt bar */
+.bottombar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+/* Modal */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal.hidden { display: none; }
+.hidden { display: none !important; }
+
+.modal-box {
+  width: 340px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modal-box h2 { margin: 0 0 4px; font-size: 16px; }
+.modal-box fieldset {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.modal-box legend { padding: 0 6px; font-size: 12px; color: var(--muted); }
+.modal-box label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.warn-line { color: var(--yellow); font-size: 12px; margin: 2px 0 0; }

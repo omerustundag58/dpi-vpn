@@ -1,3 +1,4 @@
 [workspace]
 members = ["dpi-core", "dpi-proxy"]
+exclude = ["dpi-app/src-tauri"]
 resolver = "2"
