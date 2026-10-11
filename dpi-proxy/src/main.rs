@@ -222,7 +222,7 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
         let _ = outbound.set_nodelay(true);
         stats.conns.fetch_add(1, Ordering::Relaxed);
         // muaf hostsa bölmeden tek parça (devlet/yerli hızlı geçer)
-        let plain_excluded = target.split(':').next().map(|h| dpi_core::is_excluded(h)).unwrap_or(false);
+        let plain_excluded = target.split(':').next().is_some_and(dpi_core::is_excluded);
         // ortadan böl (16B altı istekler tek parça)
         let cut = raw.len() / 2;
         let (first, second) = if !plain_excluded && raw.len() >= 16 && cut > 0 && cut < raw.len() {

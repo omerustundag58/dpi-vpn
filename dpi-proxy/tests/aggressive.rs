@@ -104,12 +104,26 @@ async fn proxy_connect_ipv6_target() {
         if let Ok((mut s, _)) = l.accept().await {
             let mut all = vec![];
             let mut buf = [0u8; 4096];
-            while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf)).await {
-                if n == 0 || all.len() > 8192 {
-                    break;
+            // Parçalı gönderimde okumalar bölünebilir: 50B sonrası 400ms daha bekle.
+            loop {
+                match tokio::time::timeout(Duration::from_millis(400), s.read(&mut buf)).await {
+                    Ok(Ok(0)) | Err(_) => break,
+                    Ok(Ok(n)) => {
+                        all.extend_from_slice(&buf[..n]);
+                        if all.len() >= 50 {
+                            // son parça yolda olabilir — kısa ek bekleme
+                            match tokio::time::timeout(Duration::from_millis(400), s.read(&mut buf)).await {
+                                Ok(Ok(m)) if m > 0 => {
+                                    all.extend_from_slice(&buf[..m]);
+                                }
+                                _ => {}
+                            }
+                            break;
+                        }
+                    }
+                    Ok(Err(_)) => break,
                 }
-                all.extend_from_slice(&buf[..n]);
-                if all.len() >= 50 {
+                if all.len() > 8192 {
                     break;
                 }
             }
