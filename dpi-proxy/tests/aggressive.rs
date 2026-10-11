@@ -279,6 +279,39 @@ async fn proxy_http_connect_flow() {
 }
 
 #[tokio::test]
+async fn proxy_reversed_before_flow() {
+    // Ters sıra: hedefe önce kuyruk parça varmalı (goodbyedpi --reverse-frag).
+    let (target_addr, mut rx_data, _rx_gap) = spawn_fake_target().await;
+    let proxy_port = free_port().await;
+    let mut proxy = tokio::process::Command::new(proxy_bin())
+        .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
+               "--cut", "before", "--reverse", "--delay-ms", "20",
+               "--force-target", &target_addr])
+        .spawn().unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let hello = fake_client_hello(b"ters-test.com");
+    let mut cli = TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await.unwrap();
+    cli.write_all(&hello).await.unwrap();
+    cli.flush().await.unwrap();
+
+    let got = tokio::time::timeout(Duration::from_secs(5), rx_data.recv()).await.expect("timeout").expect("kanal");
+    let parts = dpi_core::split_client_hello(
+        &hello,
+        dpi_core::Strategy::Custom {
+            cut: dpi_core::CutPos::Before,
+            order: dpi_core::SendOrder::InOrder,
+            delay_ms: 0,
+        },
+    );
+    assert_eq!(parts.len(), 2);
+    let mut expect = parts[1].clone();
+    expect.extend_from_slice(&parts[0]);
+    assert_eq!(got, expect, "ters sıra varışta görülmeli");
+    proxy.kill().await.ok();
+}
+
+#[tokio::test]
 async fn proxy_plain_http_flow() {
     // Duz HTTP: GET absolute-URI -> hedefe eksiksiz gitmeli.
     let (target_addr, mut rx_data, _rx_gap) = spawn_fake_target().await;
@@ -295,6 +328,8 @@ async fn proxy_plain_http_flow() {
     cli.flush().await.unwrap();
 
     let got = tokio::time::timeout(Duration::from_secs(5), rx_data.recv()).await.expect("timeout").expect("kanal");
-    assert_eq!(got, req.to_vec(), "HTTP istek bozuldu");
+    // HoSt kılığına girmiş haliyle eksiksiz gitmeli
+    let expect = b"GET http://ornek.test/sayfa?q=1 HTTP/1.1\r\nHoSt: ornek.test\r\nConnection: close\r\n\r\n";
+    assert_eq!(got, expect.to_vec(), "HTTP istek bozuldu");
     proxy.kill().await.ok();
 }

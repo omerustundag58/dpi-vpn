@@ -28,6 +28,28 @@ pub enum Strategy {
     RecordSplit { delay_ms: u64 },
     /// Böl + ilk parçadan sonra gecikme (ms). Birçok DPI kutusu out-of-order'ı yakalayamaz.
     SplitWithDelay { split_at: usize, delay_ms: u64 },
+    /// İnce ayarlı TCP bölme: kesim yeri + gönderim sırası (goodbyedpi/zapret taktikleri).
+    Custom { cut: CutPos, order: SendOrder, delay_ms: u64 },
+}
+
+/// Kesim noktası (SNI bulunduğunda).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CutPos {
+    /// SNI ortası (varsayılan, kanıtlı).
+    Mid,
+    /// SNI'nın hemen öncesi (goodbyedpi --frag-by-sni).
+    Before,
+    /// Ham offset (SNI yoksa veya özel durum).
+    At(usize),
+}
+
+/// Parça gönderim sırası.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendOrder {
+    /// Sıralı: parça1, bekle, parça2.
+    InOrder,
+    /// Ters: parça2 önce (goodbyedpi --reverse-frag). Sunucu TCP'si birleştirir.
+    Reversed,
 }
 
 impl Default for Strategy {
@@ -139,6 +161,8 @@ pub fn find_sni(packet: &[u8]) -> Option<(usize, usize)> {
 /// Bir ClientHello paketini stratejiye göre parçalara böl.
 ///
 /// Dönüş: gönderilecek parça listesi. DPI kutusu tek parçada SNI göremez.
+/// Reversed sırada bile parça SIRA listede [birinci, ikinci] döner;
+/// gönderim sırasını çağıran uygular (delay ilk gönderilenden sonra).
 pub fn split_client_hello(packet: &[u8], strategy: Strategy) -> Vec<Vec<u8>> {
     // 2 byte'tan küçük paket bölünemez — clamp panic'ini önlemek için erken çık.
     if packet.len() < 2 {
@@ -155,10 +179,17 @@ pub fn split_client_hello(packet: &[u8], strategy: Strategy) -> Vec<Vec<u8>> {
             } else {
                 split_at.clamp(1, packet.len() - 1)
             };
-            if cut == 0 || cut >= packet.len() {
-                return vec![packet.to_vec()];
-            }
-            vec![packet[..cut].to_vec(), packet[cut..].to_vec()]
+            cut_packet(packet, cut)
+        }
+        Strategy::Custom { cut, .. } => {
+            let at = match cut {
+                CutPos::Mid => find_sni(packet)
+                    .map(|(s, e)| s + (e - s) / 2)
+                    .unwrap_or(packet.len() / 2),
+                CutPos::Before => find_sni(packet).map(|(s, _)| s).unwrap_or(packet.len() / 2),
+                CutPos::At(off) => off,
+            };
+            cut_packet(packet, at.clamp(1, packet.len() - 1))
         }
         Strategy::Fragment { chunk_size } => {
             let cs = chunk_size.max(1);
@@ -166,6 +197,36 @@ pub fn split_client_hello(packet: &[u8], strategy: Strategy) -> Vec<Vec<u8>> {
         }
         Strategy::RecordSplit { .. } => split_records(packet),
     }
+}
+
+/// Tek kesitli bölme yardımcısı.
+fn cut_packet(packet: &[u8], cut: usize) -> Vec<Vec<u8>> {
+    if cut == 0 || cut >= packet.len() {
+        return vec![packet.to_vec()];
+    }
+    vec![packet[..cut].to_vec(), packet[cut..].to_vec()]
+}
+
+/// HTTP Host başlık ismini `hoSt` yap (goodbyedpi -r).
+/// Başlık İSMİ büyük/küçük harf duyarsız olduğundan tamamen yasal;
+/// saf DPI Host dizesini göremez. İlk Host başlığına uygulanır.
+pub fn disguise_host(request: &[u8]) -> Vec<u8> {
+    // "Host:" / "host:" / "HOST:" — ':' öncesi 4 harf
+    let mut out = request.to_vec();
+    let mut i = 0;
+    while i + 5 <= out.len() {
+        if out[i..i + 4].eq_ignore_ascii_case(b"host") && out[i + 4] == b':' {
+            // satır başı mı? (istek satırındaki "...host..." sahte eşleşmesin)
+            let at_line = i == 0 || (i >= 2 && &out[i - 2..i] == b"\r\n");
+            if at_line {
+                out[i + 1] = b'o';
+                out[i + 2] = b'S';
+                return out;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 /// TLS record-framing ile böl. Tek record'lu hello'yu SNI ortasından
@@ -235,11 +296,15 @@ pub fn split_once(packet: &[u8], strategy: Strategy) -> (Option<(usize, usize)>,
                 Some((s, e)) => (s + (e - s) / 2).clamp(1, packet.len() - 1),
                 None => split_at.clamp(1, packet.len() - 1),
             };
-            if cut == 0 || cut >= packet.len() {
-                vec![packet.to_vec()]
-            } else {
-                vec![packet[..cut].to_vec(), packet[cut..].to_vec()]
-            }
+            cut_packet(packet, cut)
+        }
+        Strategy::Custom { cut, .. } => {
+            let at = match cut {
+                CutPos::Mid => sni.map(|(s, e)| s + (e - s) / 2).unwrap_or(packet.len() / 2),
+                CutPos::Before => sni.map(|(s, _)| s).unwrap_or(packet.len() / 2),
+                CutPos::At(off) => off,
+            };
+            cut_packet(packet, at.clamp(1, packet.len() - 1))
         }
         Strategy::Fragment { chunk_size } => {
             let cs = chunk_size.max(1);
@@ -253,7 +318,7 @@ pub fn split_once(packet: &[u8], strategy: Strategy) -> (Option<(usize, usize)>,
 /// Şimdilik: TLS ClientHello (0x16 0x03 ..) ise true.
 pub fn should_process(port: u16, first_bytes: &[u8]) -> bool {
     if port != 443 && port != 8443 {
-        // 80 portu için de HTTP Host bölme ileride eklenecek
+        // 80: düz HTTP — Host bölme/kılık değiştirme uygulanır
         if port != 80 {
             // Yine de TLS ise işle (bazı sunucular farklı portta)
             if first_bytes.len() >= 3 && first_bytes[0] == 0x16 {
@@ -525,6 +590,7 @@ mod tests {
     fn split_strategies_all_roundtrip_and_hide() {
         let sni = b"split-agresif-test.com";
         let pkt = fake_client_hello(sni);
+        let (ss, _se) = find_sni(&pkt).expect("test SNI");
         let strats = [
             Strategy::Split { split_at: 0 },
             Strategy::Split { split_at: 1 },
@@ -538,6 +604,10 @@ mod tests {
             Strategy::Fragment { chunk_size: 135 },
             Strategy::Fragment { chunk_size: usize::MAX },
             Strategy::RecordSplit { delay_ms: 0 },
+            Strategy::Custom { cut: CutPos::Mid, order: SendOrder::InOrder, delay_ms: 0 },
+            Strategy::Custom { cut: CutPos::Before, order: SendOrder::InOrder, delay_ms: 0 },
+            Strategy::Custom { cut: CutPos::Mid, order: SendOrder::Reversed, delay_ms: 5 },
+            Strategy::Custom { cut: CutPos::At(ss + 3), order: SendOrder::InOrder, delay_ms: 0 },
         ];
         for st in strats {
             let parts = split_client_hello(&pkt, st);
@@ -574,6 +644,23 @@ mod tests {
                         assert!(
                             !p.windows(sni.len()).any(|w| w == sni),
                             "{st:?} SNI tek record'da görünmemeli"
+                        );
+                    }
+                }
+                Strategy::Custom { cut: CutPos::Before, .. } => {
+                    // Before: SNI parça2'de bütün kalır, parça1 temizdir (konumsal taktik)
+                    assert_eq!(parts.len(), 2, "{st:?} 2 parça olmalı");
+                    assert!(
+                        !parts[0].windows(sni.len()).any(|w| w == sni),
+                        "{st:?} parça1 temiz olmalı"
+                    );
+                }
+                Strategy::Custom { .. } => {
+                    assert_eq!(parts.len(), 2, "{st:?} 2 parça olmalı");
+                    for p in &parts {
+                        assert!(
+                            !p.windows(sni.len()).any(|w| w == sni),
+                            "{st:?} SNI tek parçada görünmemeli"
                         );
                     }
                 }
@@ -735,8 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn record_split_framing_valid_and_hides_sni() {
-        let sni = b"record-test.com";
+    fn record_split_framing_valid_and_hides_sni() {        let sni = b"record-test.com";
         let pkt = fake_client_hello(sni);
         let parts = split_client_hello(&pkt, Strategy::RecordSplit { delay_ms: 0 });
         assert_eq!(parts.len(), 2);
@@ -758,5 +844,58 @@ mod tests {
         let (found, p2) = split_once(&pkt, Strategy::RecordSplit { delay_ms: 0 });
         assert!(found.is_some());
         assert_eq!(p2, parts);
+    }
+
+    #[test]
+    fn custom_before_cuts_at_sni_start() {
+        let sni = b"once-test.com";
+        let pkt = fake_client_hello(sni);
+        let (s, _e) = find_sni(&pkt).unwrap();
+        let parts = split_client_hello(
+            &pkt,
+            Strategy::Custom { cut: CutPos::Before, order: SendOrder::InOrder, delay_ms: 0 },
+        );
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts.concat(), pkt);
+        // ilk parça SNI başlangıcında biter
+        assert_eq!(parts[0].len(), s);
+        // Before kesitte SNI parça2'de BÜTÜN kalır (frag-by-sni doğası);
+        // kazanç konumsal: SNI paket sınırında başlar. Parça1 temiz olmalı.
+        assert!(!parts[0].windows(sni.len()).any(|w| w == sni));
+        assert_eq!(&parts[1][0..sni.len()], sni);
+        // split_once ile aynı
+        let (_, p2) = split_once(
+            &pkt,
+            Strategy::Custom { cut: CutPos::Before, order: SendOrder::InOrder, delay_ms: 0 },
+        );
+        assert_eq!(p2, parts);
+    }
+
+    #[test]
+    fn custom_mid_matches_legacy_split() {
+        let pkt = fake_client_hello(b"mid-test.com");
+        let a = split_client_hello(&pkt, Strategy::Split { split_at: 2 });
+        let b = split_client_hello(
+            &pkt,
+            Strategy::Custom { cut: CutPos::Mid, order: SendOrder::InOrder, delay_ms: 0 },
+        );
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn disguise_host_rewrites_header_name() {
+        let req = b"GET http://ornek.com/ HTTP/1.1\r\nHost: ornek.com\r\n\r\n";
+        let out = disguise_host(req);
+        assert!(out.windows(4).any(|w| w == b"HoSt"), "HoSt olmalı");
+        assert!(!out.windows(5).any(|w| w == b"Host:"), "düz Host kalmamalı");
+        // değer aynen durur
+        assert!(out.windows(9).any(|w| w == b"ornek.com"));
+        // Host'suz istek aynen döner
+        let plain = b"GET / HTTP/1.0\r\n\r\n";
+        assert_eq!(disguise_host(plain), plain);
+        // istek satırındaki 'host' kelimesi eşleşmez
+        let tricky = b"GET http://myhost.com/ HTTP/1.1\r\nHost: myhost.com\r\n\r\n";
+        let t2 = disguise_host(tricky);
+        assert!(t2.starts_with(b"GET http://myhost.com/"));
     }
 }

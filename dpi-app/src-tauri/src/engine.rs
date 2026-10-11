@@ -187,6 +187,7 @@ async fn handle_client(
         };
         let _ = outbound.set_nodelay(true);
         stats.conns.fetch_add(1, Ordering::Relaxed);
+        let raw = dpi_core::disguise_host(&raw);
         let plain_excluded = target.split(':').next().map(|h| dpi_core::is_excluded(h)).unwrap_or(false);
         let cut = raw.len() / 2;
         let (first, second) = if !plain_excluded && raw.len() >= 16 && cut > 0 && cut < raw.len() {
@@ -215,8 +216,13 @@ async fn handle_client(
     let mut delay = match strategy {
         Strategy::SplitWithDelay { delay_ms, .. } => delay_ms,
         Strategy::RecordSplit { delay_ms } => delay_ms,
+        Strategy::Custom { delay_ms, .. } => delay_ms,
         _ => 0,
     };
+    let reversed = matches!(strategy, Strategy::Custom { order: dpi_core::SendOrder::Reversed, .. });
+    if reversed && parts.len() == 2 {
+        parts.swap(0, 1);
+    }
     let excluded = host_of(&connect_host, &buf, sni_opt).map(|h| dpi_core::is_excluded(&h)).unwrap_or(false);
     if excluded {
         parts = vec![buf.clone()];

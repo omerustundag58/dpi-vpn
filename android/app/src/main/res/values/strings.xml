@@ -29,6 +29,7 @@
         <item>Hızlı</item>
         <item>Dengeli</item>
         <item>Parçala</item>
+        <item>Ters</item>
     </string-array>
     <string name="notif_running">Koruma aktif</string>
     <string name="notif_stop">Durdur</string>

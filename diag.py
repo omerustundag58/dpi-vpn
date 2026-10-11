@@ -41,8 +41,13 @@ def classify(sock: socket.socket) -> str:
     return f"GARIP({data[:8].hex()})"
 
 
-def probe_direct(host: str, split: bool) -> tuple:
+def probe_direct(host: str, mode: str = "whole") -> tuple:
+    """mode: whole | mid | before | reversed (goodbyedpi taktikleri)."""
     hello = build_hello(host.encode())
+    # SNI konumu: sabit kalıpta 'host' başlangıcı (11B SNI varsayımı yok —
+    # SNI baytlarını hello içinde ara)
+    sne = host.encode()
+    sni_start = hello.find(sne)
     t0 = time.time()
     try:
         s = socket.create_connection((host, 443), timeout=PROBE_TIMEOUT)
@@ -51,13 +56,23 @@ def probe_direct(host: str, split: bool) -> tuple:
         return (f"TCP-BAGLANAMADI({str(e)[:50]})", -1)
     s.settimeout(PROBE_TIMEOUT)
     try:
-        if split:
-            cut = len(hello) // 2
-            s.sendall(hello[:cut])
-            time.sleep(0.03)
-            s.sendall(hello[cut:])
-        else:
+        if mode == "whole":
             s.sendall(hello)
+        else:
+            if mode == "before" and sni_start > 0:
+                cut = sni_start
+            else:
+                cut = len(hello) // 2
+            p1, p2 = hello[:cut], hello[cut:]
+            if mode == "reversed":
+                # ters sıra: kuyruk önce (TCP birleştirir)
+                s.sendall(p2)
+                time.sleep(0.03)
+                s.sendall(p1)
+            else:
+                s.sendall(p1)
+                time.sleep(0.03)
+                s.sendall(p2)
         res = classify(s)
     finally:
         s.close()
@@ -94,7 +109,7 @@ def dns_check(host: str) -> str:
     return "temiz(" + ",".join(addrs[:3]) + ")"
 
 
-def verdict(host, dns, tcp_ms, whole, spl, prx) -> str:
+def verdict(host, dns, tcp_ms, whole, variants, prx) -> str:
     if dns.startswith("ZEHIRLI"):
         return "DNS-ZEHIR -> DNSCrypt/DoH lazim"
     if tcp_ms < 0:
@@ -103,11 +118,12 @@ def verdict(host, dns, tcp_ms, whole, spl, prx) -> str:
         return "ULASILABILIR (TLS alert dondu, sunucu canli)"
     if whole.endswith("(OK)"):
         return "ACIK (direkt calisiyor, proxy gereksiz)"
-    if spl.endswith("(OK)") and not whole.endswith("(OK)"):
-        return "SNI-DPI var, BOLME CALISIYOR"
+    for name, res in variants:
+        if res.endswith("(OK)") and not whole.endswith("(OK)"):
+            return f"SNI-DPI var, {name} CALISIYOR"
     if prx.endswith("(OK)"):
         return "Proxy uzerinden ACIK"
-    if spl.startswith("RST") or whole.startswith("RST"):
+    if whole.startswith("RST"):
         return "RST yiyorsun (DPI sert) -> fake/TTL (WinDivert) gerekebilir"
     return "TIMEOUT (sunucu/DPI sessiz) -> arastirilmali"
 
@@ -125,15 +141,19 @@ def main():
     else:
         print("[diag] proxy exe yok, proxy modu atlanacak")
     try:
-        print(f"{'hedef':22} {'dns':34} {'tcp':>9} {'butun':20} {'parcali':20} {'proxy':22} karar")
+        print(f"{'hedef':22} {'dns':28} {'tcp':>7} {'butun':14} {'orta':14} {'once':14} {'ters':14} {'proxy':16} karar")
         print("-" * 170)
         for h in hosts:
             dns = dns_check(h)
-            whole, tcp_ms = probe_direct(h, split=False)
-            spl, _ = probe_direct(h, split=True) if tcp_ms >= 0 else ("-", -1)
+            whole, tcp_ms = probe_direct(h, "whole")
+            variants = []
+            for name, mode in [("orta", "mid"), ("once", "before"), ("ters", "reversed")]:
+                r, _ = probe_direct(h, mode) if tcp_ms >= 0 else ("-", -1)
+                variants.append((name, r))
             prx = probe_proxy(h) if proxy else "-"
             tcp_s = f"{tcp_ms:.0f}ms" if tcp_ms >= 0 else "yok"
-            print(f"{h:22} {dns:34.34} {tcp_s:>9} {whole:20.20} {spl:20.20} {prx:22.22} {verdict(h, dns, tcp_ms, whole, spl, prx)}")
+            cols = " ".join(f"{r:14.14}" for _, r in variants)
+            print(f"{h:22} {dns:28.28} {tcp_s:>7} {whole:14.14} {cols} {prx:16.16} {verdict(h, dns, tcp_ms, whole, variants, prx)}")
     finally:
         if proxy:
             proxy.terminate()

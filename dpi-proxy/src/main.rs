@@ -8,7 +8,7 @@
 //! hedefe parçalı gönderir. Tarayıcıda bu proxy'ye yönlendirme yapılır.
 //! (İleride: WinDivert TUN + Android VpnService aynı core'u kullanacak.)
 
-use dpi_core::Strategy;
+use dpi_core::{CutPos, SendOrder, Strategy};
 use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -41,6 +41,8 @@ fn parse_args_from(args: &[String]) -> Config {
     let mut fragment: Option<usize> = None;
     let mut tls_records = false;
     let mut legacy_touched = false;
+    let mut cut: Option<CutPos> = None;
+    let mut reverse = false;
     let mut quiet = false;
     let mut force_target: Option<String> = None;
     let mut i = 1;
@@ -68,6 +70,18 @@ fn parse_args_from(args: &[String]) -> Config {
                 tls_records = true;
                 i += 1;
             }
+            "--cut" if i + 1 < args.len() => {
+                cut = match args[i + 1].as_str() {
+                    "before" => Some(CutPos::Before),
+                    "mid" => Some(CutPos::Mid),
+                    _ => args[i + 1].parse::<usize>().ok().map(CutPos::At),
+                };
+                i += 2;
+            }
+            "--reverse" => {
+                reverse = true;
+                i += 1;
+            }
             "--quiet" => {
                 quiet = true;
                 i += 1;
@@ -86,6 +100,11 @@ fn parse_args_from(args: &[String]) -> Config {
             Some(cs) => Strategy::Fragment { chunk_size: cs.max(1) },
             // Bayrak yoksa kanıtlı varsayılan: record-split (gecikmesiz).
             // Eski TCP-bölme için açıkça --delay-ms ver.
+            None if cut.is_some() || reverse => Strategy::Custom {
+                cut: cut.unwrap_or(CutPos::Mid),
+                order: if reverse { SendOrder::Reversed } else { SendOrder::InOrder },
+                delay_ms,
+            },
             None if legacy_touched => Strategy::SplitWithDelay { split_at, delay_ms },
             None => Strategy::RecordSplit { delay_ms: 0 },
         }
@@ -221,6 +240,8 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
         };
         let _ = outbound.set_nodelay(true);
         stats.conns.fetch_add(1, Ordering::Relaxed);
+        // HoSt kılık değiştirme (goodbyedpi -r): başlık ismi yasal aralıkta değişir
+        let raw = dpi_core::disguise_host(&raw);
         // muaf hostsa bölmeden tek parça (devlet/yerli hızlı geçer)
         let plain_excluded = target.split(':').next().is_some_and(dpi_core::is_excluded);
         // ortadan böl (16B altı istekler tek parça)
@@ -253,8 +274,14 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
     let mut delay = match strategy_owned {
         Strategy::SplitWithDelay { delay_ms, .. } => delay_ms,
         Strategy::RecordSplit { delay_ms } => delay_ms,
+        Strategy::Custom { delay_ms, .. } => delay_ms,
         _ => 0,
     };
+    // Ters sıra: parça2 önce gider (goodbyedpi --reverse-frag).
+    let reversed = matches!(strategy_owned, Strategy::Custom { order: SendOrder::Reversed, .. });
+    if reversed && parts.len() == 2 {
+        parts.swap(0, 1);
+    }
     // Muaf host (devlet/yerli): bölmeden direkt ilet — yavaşlama yok.
     let excluded = host_of(&connect_host, &buf, sni_opt).map(|h| dpi_core::is_excluded(&h)).unwrap_or(false);
     if excluded {

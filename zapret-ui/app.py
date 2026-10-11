@@ -80,6 +80,7 @@ STR = {
     "mode_fast": ("Hızlı (gecikmesiz)", "Fast (no delay)"),
     "mode_bal": ("Dengeli (böl+gecikme)", "Balanced (split+delay)"),
     "mode_frag": ("Parçala (fragment)", "Fragment"),
+    "mode_rev": ("Ters (önce+kuyruk)", "Reversed (before+tail)"),
     "already": ("Program zaten çalışıyor.", "Already running."),
     "no_proxy": ("Derlenmiş proxy yok:", "Proxy binary missing:"),
     "cant_start": ("Başlatılamadı", "Could not start"),
@@ -95,8 +96,8 @@ STR = {
     "an_vague": ("Belirsiz:", "Unclear:"),
     "an_title": ("Analiz", "Check"),
     "tip_profile": ("ISS'ne göre hazır ayar.", "Preset for your ISP."),
-    "tip_mode": ("Hızlı en çabuk. Dengeli çoğu sitede. Parçala inatçı sitede.",
-                 "Fast is quickest. Balanced fits most sites. Fragment for stubborn ones."),
+    "tip_mode": ("Hızlı en çabuk. Dengeli çoğu sitede. Parçala inatçı sitede. Ters en agresif.",
+                 "Fast is quickest. Balanced fits most. Fragment for stubborn ones. Reversed is most aggressive."),
     "tip_delay": ("İki parça arası bekleme (ms). 0 en hızlı.",
                   "Wait between parts (ms). 0 is fastest."),
     "tip_theme": ("Açık, koyu ya da Windows'a uyar.", "Light, dark, or follow Windows."),
@@ -362,7 +363,7 @@ class App:
         return en if self.lang == "en" else tr
 
     def modes(self):
-        return [self.S("mode_fast"), self.S("mode_bal"), self.S("mode_frag")]
+        return [self.S("mode_fast"), self.S("mode_bal"), self.S("mode_frag"), self.S("mode_rev")]
 
     def _row(self, parent, key, y):
         lbl = tk.Label(parent, font=("Segoe UI", 9))
@@ -719,6 +720,8 @@ class App:
     def on_mode(self, *_):
         if self.cmb_mode.get() == self.S("mode_bal"):
             self.on_profile()
+        elif self.cmb_mode.get() == self.S("mode_rev"):
+            pass  # Ters: kaydırıcıdaki gecikme korunur
         else:
             self.delay.set(0)
         self._refresh_info()
@@ -731,6 +734,8 @@ class App:
         mode = self.cmb_mode.get()
         if mode == self.S("mode_frag"):
             return base + ["--fragment", "32"]
+        if mode == self.S("mode_rev"):
+            return base + ["--cut", "before", "--reverse", "--delay-ms", str(int(float(self.scl.get())))]
         if mode == self.S("mode_bal"):
             return base + ["--tls-records", "--delay-ms", str(int(float(self.scl.get())))]
         return base + ["--tls-records"]

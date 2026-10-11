@@ -4,7 +4,7 @@
 //! C ABI stub'ları (dpi_android_*) korundu; JNI fonksiyonları eklendi.
 #![cfg(target_os = "android")]
 
-use crate::{dpi_version, find_sni, should_process, split_client_hello, split_records, Strategy};
+use crate::{dpi_version, find_sni, should_process, split_client_hello, split_records, CutPos, SendOrder, Strategy};
 use jni::objects::{JByteArray, JClass};
 use jni::sys::jboolean;
 use jni::JNIEnv;
@@ -52,9 +52,14 @@ pub unsafe extern "C" fn dpi_android_split_count(
 
 fn code_to_strategy(code: c_int, param: c_int, delay_ms: u64) -> Strategy {
     match code {
-        // 0 = TCP split (gecikmeli), 1 = fragment, 2 = record-split
+        // 0 = TCP split (gecikmeli), 1 = fragment, 2 = record-split, 3 = ters sıra
         1 => Strategy::Fragment { chunk_size: (param.max(1)) as usize },
         2 => Strategy::RecordSplit { delay_ms },
+        3 => Strategy::Custom {
+            cut: CutPos::Mid,
+            order: SendOrder::Reversed,
+            delay_ms,
+        },
         _ => Strategy::SplitWithDelay { split_at: (param.max(1)) as usize, delay_ms },
     }
 }
@@ -153,6 +158,40 @@ pub extern "system" fn Java_com_dpivpn_DpiJni_splitTcp<'local>(
         }
         None => vec![],
     };
+    parts_to_java(&mut env, out)
+}
+
+/// byte[][] döner: ince ayarlı bölme.
+/// cut_code: 0 = SNI ortası, 1 = SNI öncesi. reverse: 1 = ters sıra.
+#[no_mangle]
+pub extern "system" fn Java_com_dpivpn_DpiJni_splitCustom<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    packet: JByteArray<'local>,
+    _delay_ms: jni::sys::jlong,
+    cut_code: jni::sys::jint,
+    reverse: jni::sys::jint,
+) -> jni::sys::jobjectArray {
+    let out: Vec<Vec<u8>> = match read_bytes(&mut env, packet) {
+        Some(p) => {
+            let cut = if cut_code == 1 { CutPos::Before } else { CutPos::Mid };
+            let order = if reverse == 1 { SendOrder::Reversed } else { SendOrder::InOrder };
+            let mut parts = split_client_hello(
+                &p,
+                Strategy::Custom { cut, order, delay_ms: 0 },
+            );
+            // Gönderim sırası burada uygulanır (gecikme ilk gönderilenden sonra).
+            if reverse == 1 && parts.len() == 2 {
+                parts.swap(0, 1);
+            }
+            parts
+        }
+        None => vec![],
+    };
+    parts_to_java(&mut env, out)
+}
+
+fn parts_to_java<'local>(env: &mut JNIEnv<'local>, out: Vec<Vec<u8>>) -> jni::sys::jobjectArray {
     match env.new_object_array(
         out.len() as i32,
         "[B",

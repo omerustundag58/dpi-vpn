@@ -62,7 +62,7 @@ class DpiVpnService : VpnService() {
             return START_NOT_STICKY
         }
         profile = (intent?.getIntExtra("profile", 0) ?: 0).coerceIn(0, 7)
-        mode = (intent?.getIntExtra("mode", 0) ?: 0).coerceIn(0, 2)
+        mode = (intent?.getIntExtra("mode", 0) ?: 0).coerceIn(0, 3)
         val customDns = intent?.getBooleanExtra("custom_dns", false) ?: false
         quicBlock = intent?.getBooleanExtra("quic_block", true) ?: true
         @Suppress("UNCHECKED_CAST")
@@ -347,6 +347,7 @@ class DpiVpnService : VpnService() {
     private fun sendSplit(conn: TcpConn, data: ByteArray) {
         val delayMs = PROFILE_DELAY[profile]
         val parts: Array<ByteArray> = when (mode) {
+            3 -> DpiJni.splitCustom(data, 0L, 1, 1) // Ters: SNI öncesi + ters sıra
             2 -> DpiJni.splitTcp(data, 0L)          // Parçala: düz TCP bölme
             else -> DpiJni.splitRecords(data)       // Hızlı/Dengeli: record-split
         }
@@ -354,20 +355,40 @@ class DpiVpnService : VpnService() {
         writeParts(conn, parts, delay)
     }
 
-    // Düz metin (HTTP) ilk yükü: ortadan ikiye, gerekirse gecikmeli.
-    // Host başlığı iki segmente dağılınca saf DPI göremez.
+    // Düz metin (HTTP) ilk yükü: HoSt kılığına girer, ortadan ikiye bölünür.
     private fun sendPlainSplit(conn: TcpConn, data: ByteArray) {
-        if (data.size < 16) {
-            writeAll(conn.channel, data)
+        val masked = disguiseHost(data)
+        if (masked.size < 16) {
+            writeAll(conn.channel, masked)
             return
         }
-        val cut = data.size / 2
+        val cut = masked.size / 2
         val delay = if (mode == 1) PROFILE_DELAY[profile] else 0L
-        writeAll(conn.channel, data.copyOfRange(0, cut))
+        writeAll(conn.channel, masked.copyOfRange(0, cut))
         if (delay > 0) {
             try { Thread.sleep(delay) } catch (_: InterruptedException) {}
         }
-        writeAll(conn.channel, data.copyOfRange(cut, data.size))
+        writeAll(conn.channel, masked.copyOfRange(cut, masked.size))
+    }
+
+    // "Host:" başlık ismini "HoSt" yap (isim büyük/küçük harf duyarsız, yasal).
+    private fun disguiseHost(data: ByteArray): ByteArray {
+        if (data.size > 2048) return data
+        var i = 0
+        while (i + 5 <= data.size) {
+            val h = { k: Int -> data[i + k].toInt().and(0xFF).toChar().lowercaseChar() }
+            if (h(0) == 'h' && h(1) == 'o' && h(2) == 's' && h(3) == 't' && data[i + 4] == ':'.code.toByte()) {
+                val atLine = i == 0 || (i >= 2 && data[i - 2] == '\r'.code.toByte() && data[i - 1] == '\n'.code.toByte())
+                if (atLine) {
+                    val out = data.copyOf()
+                    out[i + 1] = 'o'.code.toByte()
+                    out[i + 2] = 'S'.code.toByte()
+                    return out
+                }
+            }
+            i++
+        }
+        return data
     }
 
     private fun writeParts(conn: TcpConn, parts: Array<ByteArray>, delay: Long) {

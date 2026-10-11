@@ -88,6 +88,11 @@ async fn proxy_start(
     let strategy = match mode.as_str() {
         "parcala" => dpi_core::Strategy::Fragment { chunk_size: 32 },
         "dengeli" => dpi_core::Strategy::RecordSplit { delay_ms },
+        "ters" => dpi_core::Strategy::Custom {
+            cut: dpi_core::CutPos::Before,
+            order: dpi_core::SendOrder::Reversed,
+            delay_ms,
+        },
         _ => dpi_core::Strategy::RecordSplit { delay_ms: 0 },
     };
     let listen = if lan_share { "0.0.0.0:8888" } else { "127.0.0.1:8888" }.to_string();
