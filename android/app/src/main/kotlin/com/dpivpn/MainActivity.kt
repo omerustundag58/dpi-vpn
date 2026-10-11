@@ -44,6 +44,12 @@ class MainActivity : Activity() {
             val down = intent.getLongExtra("bytes_down", 0L)
             val secs = intent.getLongExtra("duration_sec", 0L)
             val running = intent.getBooleanExtra("running", false)
+            if (!running && intent.getStringExtra("error") == "vpn_denied") {
+                statusText.text = getString(R.string.vpn_denied)
+                statusDot.setBackgroundResource(R.drawable.dot_red)
+                statsText.text = getString(R.string.stats_empty)
+                return
+            }
             statusText.text = if (running) getString(R.string.status_running) else getString(R.string.status_stopped)
             statusDot.setBackgroundResource(if (running) R.drawable.dot_green else R.drawable.dot_red)
             statsText.text = getString(R.string.stats_format, up, down, secs)

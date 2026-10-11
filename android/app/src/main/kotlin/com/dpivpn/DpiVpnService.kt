@@ -80,11 +80,25 @@ class DpiVpnService : VpnService() {
         for (pkg in allowed) {
             try { b.addAllowedApplication(pkg) } catch (_: Exception) {}
         }
-        tun = try { b.establish() } catch (_: Exception) { return }
+        val fd = try { b.establish() } catch (_: Exception) { null }
+        if (fd == null) {
+            // VPN izni yok (onay verilmedi) — sahte "çalışıyor" gösterme
+            tun = null
+            sendBroadcast(Intent(ACTION_UPDATE).apply {
+                putExtra("bytes_up", 0L)
+                putExtra("bytes_down", 0L)
+                putExtra("duration_sec", 0L)
+                putExtra("running", false)
+                putExtra("error", "vpn_denied")
+                setPackage(packageName)
+            })
+            stopSelf()
+            return
+        }
+        tun = fd
         startFg()
         running.set(true)
         startMs = System.currentTimeMillis()
-        val fd = tun ?: return
         thread(name = "tun-read", isDaemon = true) { readLoop(FileInputStream(fd.fileDescriptor)) }
         thread(name = "stats", isDaemon = true) { statsLoop() }
     }
@@ -122,7 +136,7 @@ class DpiVpnService : VpnService() {
         return b.setContentTitle(getString(R.string.notif_running))
             .setContentText("${PROFILE_NAMES[profile]} • ↑ ${fmtBytes(up)} ↓ ${fmtBytes(down)}")
             .setStyle(Notification.BigTextStyle().bigText(detail))
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notif)
             .setContentIntent(openPi)
             .addAction(Notification.Action.Builder(null, getString(R.string.notif_stop), stopPi).build())
             .setOngoing(true)

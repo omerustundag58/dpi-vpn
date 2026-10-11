@@ -5,5 +5,7 @@
         <item name="colorPrimary">#2563EB</item>
         <item name="colorOnPrimary">#FFFFFF</item>
         <item name="colorSecondaryContainer">#DBEAFE</item>
+        <item name="android:windowSplashScreenBackground">#2563EB</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_notif</item>
     </style>
 </resources>
