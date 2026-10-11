@@ -85,6 +85,7 @@ class MainActivity : Activity() {
         quicSwitch.isChecked = prefs.getBoolean("quic_block", true)
 
         startButton.setOnClickListener {
+            it.bump()
             prefs.edit()
                 .putInt("profile", profiles.indexOf(profileDropdown.text.toString()).coerceAtLeast(0))
                 .putInt("mode", modes.indexOf(modeDropdown.text.toString()).coerceAtLeast(0))
@@ -99,9 +100,11 @@ class MainActivity : Activity() {
                 startVpn()
             }
         }
-        stopButton.setOnClickListener { stopVpn() }
+        stopButton.setOnClickListener { it.bump(); stopVpn() }
         pickAppsButton.setOnClickListener {
+            it.bump()
             startActivity(Intent(this, AppPickerActivity::class.java))
+            overridePendingTransition(R.anim.fade_in, R.anim.fade_out)
         }
 
         registerReceiverCompat(stateReceiver, IntentFilter(ACTION_STATE_UPDATE))
@@ -170,8 +173,14 @@ class MainActivity : Activity() {
         statusDot.scaleY = 1f
     }
 
-    private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
+    // Butona basışta hafif yaylanma hissi.
+    private fun android.view.View.bump() {
+        animate().scaleX(0.95f).scaleY(0.95f).setDuration(80).withEndAction {
+            animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+        }.start()
+    }
+
+    private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {        if (android.os.Build.VERSION.SDK_INT >= 33) {
             registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("DEPRECATION") registerReceiver(receiver, filter)

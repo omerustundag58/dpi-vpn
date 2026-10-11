@@ -332,6 +332,7 @@ class App:
         self.txt.tag_config("err", foreground="#F87171")
         self.txt.tag_config("info", foreground="#7DD3FC")
         self.root.after(200, self.pump_log)
+        self.root.after(600, self._pulse)
 
         # butonlar
         self.mk_btn("analyze", 460, self.analyze)
@@ -368,9 +369,50 @@ class App:
         lbl.place(x=14, y=y)
         self.row_labels.append((lbl, key))
 
+    def fade_in(self):
+        # ~600ms ease-out cubic belirme (16ms kareler).
+        import time
+        self._fade_t0 = time.time()
+        self._fade_step()
+
+    def _fade_step(self):
+        import time
+        try:
+            t = min(1.0, (time.time() - self._fade_t0) / 0.6)
+            eased = 1.0 - (1.0 - t) ** 3
+            self.root.attributes("-alpha", eased)
+            if t < 1.0:
+                self.root.after(16, self._fade_step)
+        except tk.TclError:
+            pass
+
     def _dot_color(self, color):
-        self.dot.delete("all")
-        self.dot.create_oval(2, 2, 12, 12, fill=color, outline=color)
+        self._dot_c = color
+        self._dot_r = 5
+        self._draw_dot()
+
+    def _draw_dot(self):
+        try:
+            self.dot.delete("all")
+            r = self._dot_r
+            self.dot.create_oval(7 - r, 7 - r, 7 + r, 7 + r,
+                                 fill=self._dot_c, outline=self._dot_c)
+        except tk.TclError:
+            pass
+
+    def _pulse(self):
+        # çalışırken nokta nabız gibi büyüyüp küçülür
+        try:
+            active = self.proc is not None and self.proc.poll() is None
+            if active:
+                self._dot_r = 7 if self._dot_r <= 5 else 5
+                self._draw_dot()
+            elif getattr(self, "_dot_r", 5) != 5:
+                self._dot_r = 5
+                self._draw_dot()
+        except tk.TclError:
+            pass
+        self.root.after(450, self._pulse)
 
     def mk_btn(self, key, y, cmd):
         b = tk.Button(self.root, command=cmd, relief="flat", bd=0,
@@ -382,17 +424,6 @@ class App:
         b.bind("<Leave>", lambda _e, w=b: w.configure(bg=self.T["CARD"]))
         self.menu_btns.append((b, key))
         return b
-
-    def fade_in(self, alpha=0.0):
-        # Açılışta yumuşak belirme (Windows).
-        try:
-            if alpha >= 1.0:
-                self.root.attributes("-alpha", 1.0)
-                return
-            self.root.attributes("-alpha", alpha)
-            self.root.after(25, lambda: self.fade_in(alpha + 0.08))
-        except tk.TclError:
-            pass
 
     def apply_theme(self):
         name = self.theme_name
