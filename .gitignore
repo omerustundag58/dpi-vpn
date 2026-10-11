@@ -27,3 +27,5 @@ WinDivert*.dll
 .DS_Store
 .cargo/config.toml
 android/app/src/main/jniLibs/
+dpi-app/node_modules/
+dpi-app/src-tauri/target/
