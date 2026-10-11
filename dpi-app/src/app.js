@@ -368,13 +368,14 @@ function init() {
     })
   );
 
-  // Backend log olayı
+  // Backend log olayı + tepsi kısayolu
   try {
     const ev = window.__TAURI__ && window.__TAURI__.event;
     if (ev && ev.listen) ev.listen("log", (e) => {
       const p = e.payload || {};
       addLog(p.level || "info", p.text || "");
     });
+    if (ev && ev.listen) ev.listen("tray-toggle", () => { onRun(); });
   } catch {}
 
   // Başlangıç QUIC durumu
