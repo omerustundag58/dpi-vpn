@@ -332,7 +332,8 @@ pub fn auto_strategy(packet: &[u8], candidates: &[Strategy]) -> Option<Strategy>
     fallback.map(|(_, st)| st)
 }
 
-/// Hız öncelikli preset: gecikmesiz bölme. DPI kutularının çoğu/// SNI'ı tek parçada göremeyince geçirir; 10ms gecikme hıza mal olur.
+/// Hız öncelikli preset: gecikmesiz bölme. DPI kutularının çoğu
+/// SNI'ı tek parçada göremeyince geçirir.
 /// Hız istiyorsan bunu kullan.
 pub fn fast_strategy() -> Strategy {
     Strategy::Split { split_at: 2 }
@@ -350,21 +351,37 @@ pub fn is_excluded(host: &str) -> bool {
     EXCLUDED_SUFFIXES.iter().any(|s| h == *s || h.ends_with(&format!(".{s}")))
 }
 
-/// Tek parse ile SNI + parçaları döndürür (hızlı yol).
-/// Ayrı ayrı `find_sni` + `split_client_hello` çağırmak paketi 2 kez
-/// parse eder; bu fonksiyon 1 kez eder. Android'de pil/CPU dostu.
-pub fn split_once(packet: &[u8], strategy: Strategy) -> (Option<(usize, usize)>, Vec<Vec<u8>>) {
+/// Sıfır kopyalı bölme planı: parça bayt aralıkları, tahsis YOK.
+/// Çağıran `packet[a..b]` dilimlerini doğrudan sokete yazar.
+/// RecordSplit yeniden çerçeveler (`needs_reframe`), aralık vermez.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitPlan {
+    pub sni: Option<(usize, usize)>,
+    pub ranges: Vec<(usize, usize)>,
+    pub needs_reframe: bool,
+}
+
+/// Tek parse + tahsissiz plan. Android veri düzlemi ve sıcak döngüler için.
+pub fn plan_split(packet: &[u8], strategy: Strategy) -> SplitPlan {
     if packet.len() < 2 {
-        return (None, vec![packet.to_vec()]);
+        return SplitPlan { sni: None, ranges: vec![(0, packet.len())], needs_reframe: false };
     }
     let sni = find_sni(packet);
-    let parts = match strategy {
+    let cut_of = |at: usize| at.clamp(1, packet.len() - 1);
+    let two = |cut: usize| {
+        if cut == 0 || cut >= packet.len() {
+            vec![(0, packet.len())]
+        } else {
+            vec![(0, cut), (cut, packet.len())]
+        }
+    };
+    match strategy {
         Strategy::Split { split_at } | Strategy::SplitWithDelay { split_at, .. } => {
             let cut = match sni {
-                Some((s, e)) => (s + (e - s) / 2).clamp(1, packet.len() - 1),
-                None => split_at.clamp(1, packet.len() - 1),
+                Some((s, e)) => cut_of(s + (e - s) / 2),
+                None => cut_of(split_at),
             };
-            cut_packet(packet, cut)
+            SplitPlan { sni, ranges: two(cut), needs_reframe: false }
         }
         Strategy::Custom { cut, .. } => {
             let at = match cut {
@@ -372,15 +389,33 @@ pub fn split_once(packet: &[u8], strategy: Strategy) -> (Option<(usize, usize)>,
                 CutPos::Before => sni.map(|(s, _)| s).unwrap_or(packet.len() / 2),
                 CutPos::At(off) => off,
             };
-            cut_packet(packet, at.clamp(1, packet.len() - 1))
+            SplitPlan { sni, ranges: two(cut_of(at)), needs_reframe: false }
         }
         Strategy::Fragment { chunk_size } => {
             let cs = chunk_size.max(1);
-            packet.chunks(cs).map(|c| c.to_vec()).collect()
+            let mut ranges = vec![];
+            let mut o = 0;
+            while o < packet.len() {
+                let e = (o + cs).min(packet.len());
+                ranges.push((o, e));
+                o = e;
+            }
+            SplitPlan { sni, ranges, needs_reframe: false }
         }
-        Strategy::RecordSplit { .. } => split_records(packet),
-    };
-    (sni, parts)
+        Strategy::RecordSplit { .. } => SplitPlan { sni, ranges: vec![], needs_reframe: true },
+    }
+}
+
+/// Tek parse ile SNI + parçaları döndürür (hızlı yol).
+/// Ayrı ayrı `find_sni` + `split_client_hello` çağırmak paketi 2 kez
+/// parse eder; bu fonksiyon 1 kez eder. Android'de pil/CPU dostu.
+pub fn split_once(packet: &[u8], strategy: Strategy) -> (Option<(usize, usize)>, Vec<Vec<u8>>) {
+    if matches!(strategy, Strategy::RecordSplit { .. }) {
+        return (find_sni(packet), split_records(packet));
+    }
+    let plan = plan_split(packet, strategy);
+    let parts = plan.ranges.iter().map(|&(a, b)| packet[a..b].to_vec()).collect();
+    (plan.sni, parts)
 }
 /// Paketin DPI işlemine girip girmeyeceğine karar ver.
 /// Şimdilik: TLS ClientHello (0x16 0x03 ..) ise true.
@@ -1374,5 +1409,66 @@ mod tests {
         v2[4] = 0x02;
         assert_eq!(split_quic_initial(&v2), vec![v2.clone()]);
         assert!(!is_quic_initial(&v2));
+    }
+
+    #[test]
+    fn plan_ranges_match_materialized() {
+        let pkt = fake_client_hello(b"plan-test.com");
+        let strats = [
+            Strategy::Split { split_at: 2 },
+            Strategy::SplitWithDelay { split_at: 2, delay_ms: 5 },
+            Strategy::Custom { cut: CutPos::Mid, order: SendOrder::Reversed, delay_ms: 0 },
+            Strategy::Custom { cut: CutPos::Before, order: SendOrder::InOrder, delay_ms: 0 },
+            Strategy::Fragment { chunk_size: 9 },
+        ];
+        for st in strats {
+            let plan = plan_split(&pkt, st);
+            assert!(!plan.needs_reframe);
+            assert_eq!(plan.sni, find_sni(&pkt));
+            // aralıklar bitişik + tam kapsama
+            let mut off = 0;
+            for (a, b) in &plan.ranges {
+                assert_eq!(*a, off);
+                assert!(b > a && *b <= pkt.len());
+                off = *b;
+            }
+            assert_eq!(off, pkt.len());
+            // dilimleme tahsisli yolla aynı
+            let sliced: Vec<Vec<u8>> = plan.ranges.iter().map(|&(a, b)| pkt[a..b].to_vec()).collect();
+            assert_eq!(sliced, split_client_hello(&pkt, st));
+            let (s2, p2) = split_once(&pkt, st);
+            assert_eq!(s2, plan.sni);
+            assert_eq!(p2, sliced);
+        }
+        // record: reframe işareti
+        let rp = plan_split(&pkt, Strategy::RecordSplit { delay_ms: 0 });
+        assert!(rp.needs_reframe && rp.ranges.is_empty());
+        // boş paket paniklemez
+        let ep = plan_split(&[], Strategy::Split { split_at: 2 });
+        assert_eq!(ep.ranges, vec![(0, 0)]);
+    }
+
+    #[test]
+    fn bench_plan_vs_alloc() {
+        let pkt = fake_client_hello(&vec![b'p'; 120]);
+        let iters = 50_000u32;
+        let t0 = std::time::Instant::now();
+        let mut n = 0;
+        for _ in 0..iters {
+            n += split_client_hello(&pkt, fast_strategy()).len();
+        }
+        let alloc = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let mut m = 0;
+        for _ in 0..iters {
+            m += plan_split(&pkt, fast_strategy()).ranges.len();
+        }
+        let plan = t1.elapsed();
+        println!(
+            "planbench: alloc={alloc:?} ({:.0}ns/op) plan={plan:?} ({:.0}ns/op)",
+            alloc.as_nanos() as f64 / iters as f64,
+            plan.as_nanos() as f64 / iters as f64,
+        );
+        assert_eq!(n, m);
     }
 }
