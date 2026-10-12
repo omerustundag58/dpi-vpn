@@ -64,6 +64,55 @@ impl Default for Strategy {
 /// Dönüş: (sni_value_start, sni_value_end) — paketin içindeki byte offset'leri.
 /// Bulunamazsa None.
 pub fn find_sni(packet: &[u8]) -> Option<(usize, usize)> {
+    let (body, data_off, data_len) = find_ext_data(packet, 0x0000)?;
+    // server_name_list_len(2), sonra: name_type(1) + name_len(2) + name
+    if data_len < 2 {
+        return None;
+    }
+    let list_len = u16::from_be_bytes([body[data_off], body[data_off + 1]]) as usize;
+    let ext_end_bound = data_off + data_len;
+    let list_end = (data_off + 2 + list_len).min(ext_end_bound);
+    let mut p = data_off + 2;
+    while p + 3 <= list_end && p + 3 <= body.len() {
+        let name_type = body[p];
+        let name_len = u16::from_be_bytes([body[p + 1], body[p + 2]]) as usize;
+        p += 3;
+        if name_type == 0 && p + name_len <= body.len() && p + name_len <= ext_end_bound {
+            // body offset -> packet offset (+9)
+            return Some((9 + p, 9 + p + name_len));
+        }
+        match p.checked_add(name_len) {
+            Some(np) if np <= body.len() => p = np,
+            _ => break,
+        }
+        if p > list_end {
+            break;
+        }
+    }
+    None
+}
+
+/// ECH (Encrypted Client Hello, tip 0xFE0D) uzantısının ham verisini bul.
+/// Dönüş: paketteki (data_start, data_end). Outer SNI sahte olabilir!
+pub fn find_ech(packet: &[u8]) -> Option<(usize, usize)> {
+    let (_body, data_off, data_len) = find_ext_data(packet, 0xFE0D)?;
+    Some((9 + data_off, 9 + data_off + data_len))
+}
+
+/// Hello özeti: SNI + ECH varlığı tek parse'ta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelloInfo {
+    pub sni: Option<(usize, usize)>,
+    pub ech: Option<(usize, usize)>,
+}
+
+pub fn hello_info(packet: &[u8]) -> HelloInfo {
+    HelloInfo { sni: find_sni(packet), ech: find_ech(packet) }
+}
+
+/// ClientHello extensions alanında `want` tipini ara.
+/// Dönüş: (body, data_offset_body, data_len). Offsetler body'ye göre.
+fn find_ext_data(packet: &[u8], want: u16) -> Option<(&[u8], usize, usize)> {
     // Minimum: TLS record header (5) + handshake header (4)
     if packet.len() < 9 {
         return None;
@@ -72,14 +121,11 @@ pub fn find_sni(packet: &[u8]) -> Option<(usize, usize)> {
     if packet[0] != 0x16 {
         return None;
     }
-    // 1-2: TLS version (0x0301..0x0304)
-    // 5-6: record length — tutarlılık kontrolü (gevşek)
     // Handshake: 5: type == 0x01 (ClientHello)
     if packet[5] != 0x01 {
         return None;
     }
 
-    // Extensions alanına kadar parse etmemiz lazım.
     // ClientHello gövdesi offset 9'dan başlar (record 5 + handshake 4).
     let body = &packet[9..];
     let mut pos = 0usize;
@@ -125,33 +171,8 @@ pub fn find_sni(packet: &[u8]) -> Option<(usize, usize)> {
         if body.len() < pos + ext_len {
             return None;
         }
-        // 0x0000 = server_name
-        if ext_type == 0x0000 && ext_len >= 2 {
-            // server_name_list_len(2), sonra: name_type(1) + name_len(2) + name
-            if body.len() < pos + 2 {
-                return None;
-            }
-            let list_len = u16::from_be_bytes([body[pos], body[pos + 1]]) as usize;
-            // ext datası: [list_len(2)][liste(list_len)]
-            let ext_end_bound = pos + ext_len;
-            let list_end = (pos + 2 + list_len).min(ext_end_bound);
-            let mut p = pos + 2;
-            while p + 3 <= list_end && p + 3 <= body.len() {
-                let name_type = body[p];
-                let name_len = u16::from_be_bytes([body[p + 1], body[p + 2]]) as usize;
-                p += 3;
-                if name_type == 0 && p + name_len <= body.len() && p + name_len <= ext_end_bound {
-                    // body offset -> packet offset (+9)
-                    return Some((9 + p, 9 + p + name_len));
-                }
-                match p.checked_add(name_len) {
-                    Some(np) if np <= body.len() => p = np,
-                    _ => break,
-                }
-                if p > list_end {
-                    break;
-                }
-            }
+        if ext_type == want {
+            return Some((body, pos, ext_len));
         }
         pos += ext_len;
     }
@@ -892,8 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_strategy_picks_hider() {
-        let pkt = fake_client_hello(b"oto-test.com");
+    fn auto_strategy_picks_hider() {        let pkt = fake_client_hello(b"oto-test.com");
         let cands = [
             Strategy::Custom { cut: CutPos::At(2), order: SendOrder::InOrder, delay_ms: 0 },
             Strategy::Fragment { chunk_size: 5 },
@@ -906,6 +926,62 @@ mod tests {
         // boş liste / SNI yoksa None
         assert_eq!(auto_strategy(&pkt, &[]), None);
         assert_eq!(auto_strategy(b"GET /", &both), None);
+    }
+
+    /// fake hello'ya ECH uzantısı ekler (uzunluk alanları güncellenir).
+    fn with_ech(mut pkt: Vec<u8>, ech_data: &[u8]) -> Vec<u8> {
+        // ext_total alanı paket offset 50'de (9 + 41)
+        let ext_off = 50usize;
+        let old_total = u16::from_be_bytes([pkt[ext_off], pkt[ext_off + 1]]) as usize;
+        let mut ext = vec![0xFE, 0x0D];
+        ext.extend_from_slice(&(ech_data.len() as u16).to_be_bytes());
+        ext.extend_from_slice(ech_data);
+        let at = ext_off + 2 + old_total; // eski extensions sonu
+        pkt.splice(at..at, ext.iter().cloned());
+        let new_total = (old_total + ext.len()) as u16;
+        pkt[ext_off..ext_off + 2].copy_from_slice(&new_total.to_be_bytes());
+        // handshake + record uzunlukları
+        let hs_len = u32::from_be_bytes([0, pkt[6], pkt[7], pkt[8]]) as usize + ext.len();
+        pkt[6] = (hs_len >> 16) as u8;
+        pkt[7] = (hs_len >> 8) as u8;
+        pkt[8] = hs_len as u8;
+        let rec_len = u16::from_be_bytes([pkt[3], pkt[4]]) as usize + ext.len();
+        pkt[3..5].copy_from_slice(&(rec_len as u16).to_be_bytes());
+        pkt
+    }
+
+    #[test]
+    fn ech_detected_with_sni() {
+        let pkt = with_ech(fake_client_hello(b"outer-ornek.com"), &[0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04]);
+        let info = hello_info(&pkt);
+        // SNI hâlâ bulunur (outer, sahte olabilir)
+        let (s, e) = info.sni.expect("SNI bulunmalı");
+        assert_eq!(&pkt[s..e], b"outer-ornek.com");
+        // ECH verisi bulunur
+        let (es, ee) = info.ech.expect("ECH bulunmalı");
+        assert_eq!(&pkt[es..ee], &[0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04]);
+        // ECH'siz hello'da yok
+        let plain = fake_client_hello(b"sade.com");
+        assert!(find_ech(&plain).is_none());
+        assert!(hello_info(&plain).ech.is_none());
+        // bölme ECH'li pakette de çalışır
+        let parts = split_client_hello(&pkt, Strategy::default());
+        assert_eq!(parts.len(), 2);
+    }
+
+    #[test]
+    fn ech_truncated_no_panic() {
+        let mut pkt = with_ech(fake_client_hello(b"x.com"), &[0x01; 6]);
+        for cut in [pkt.len() - 1, pkt.len() - 3, 60, 30, 10] {
+            let pre = &pkt[..cut.min(pkt.len())];
+            let _ = find_ech(pre);
+            let _ = hello_info(pre);
+            let _ = split_client_hello(pre, Strategy::default());
+        }
+        // bozuk ECH uzunluğu
+        pkt[50] = 0xFF;
+        pkt[51] = 0xFF;
+        assert!(find_ech(&pkt).is_none_or(|_| true));
     }
 
     #[test]
