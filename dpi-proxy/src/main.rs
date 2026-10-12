@@ -32,6 +32,8 @@ struct Config {
     force_target: Option<String>,
     /// Sessiz kip: bağlantı başına gelen/kapandı satırları basılmaz.
     quiet: bool,
+    /// Otomatik mod: host başına en iyi taktik önbelleğe alınır.
+    auto: bool,
 }
 
 fn parse_args_from(args: &[String]) -> Config {
@@ -44,6 +46,7 @@ fn parse_args_from(args: &[String]) -> Config {
     let mut cut: Option<CutPos> = None;
     let mut reverse = false;
     let mut quiet = false;
+    let mut auto = false;
     let mut force_target: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
@@ -86,6 +89,10 @@ fn parse_args_from(args: &[String]) -> Config {
                 quiet = true;
                 i += 1;
             }
+            "--auto" => {
+                auto = true;
+                i += 1;
+            }
             "--force-target" if i + 1 < args.len() => {
                 force_target = Some(args[i + 1].clone());
                 i += 2;
@@ -109,7 +116,7 @@ fn parse_args_from(args: &[String]) -> Config {
             None => Strategy::RecordSplit { delay_ms: 0 },
         }
     };
-    Config { listen, strategy, force_target, quiet }
+    Config { listen, strategy, force_target, quiet, auto }
 }
 
 fn parse_args() -> Config {
@@ -188,7 +195,15 @@ async fn read_tls_full(inbound: &mut TcpStream, mut buf: Vec<u8>) -> Vec<u8> {
 /// yoksa varsayılan hedefe. MVP'de SNI -> IP için DNS kullanıyoruz.
 /// Tarayıcılar HTTP CONNECT ile gelir (örn. "CONNECT host:443 HTTP/1.1");
 /// ham TLS gelirse eski SNI-sniff yolu kullanılır.
-async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target: Option<String>, stats: Arc<Stats>, quiet: bool) {
+async fn handle_client(
+    mut inbound: TcpStream,
+    strategy: Strategy,
+    force_target: Option<String>,
+    stats: Arc<Stats>,
+    quiet: bool,
+    auto: bool,
+    auto_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Strategy>>>,
+) {
     // Nagle kapalı: bölünmüş parçalar tek TCP segmentinde birleşmesin.
     // Bu olmadan DPI bypass şansa kalır.
     let _ = inbound.set_nodelay(true);
@@ -307,7 +322,27 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
     buf = read_tls_full(&mut inbound, buf).await;
 
     // Hızlı yol: tek parse ile SNI + parçalar (Android'de pil/CPU dostu).
-    let strategy_owned = strategy;
+    // Otomatik modda host'un taktiği önbellekten gelir, yoksa seçilir.
+    let strategy_owned = if auto {
+        let key = host_of(&connect_host, &buf, dpi_core::find_sni(&buf)).unwrap_or_default();
+        if key.is_empty() {
+            strategy
+        } else {
+            let hit = auto_cache.lock().ok().and_then(|c| c.get(&key).copied());
+            match hit {
+                Some(s) => s,
+                None => {
+                    let pick = dpi_core::auto_pick(&buf);
+                    if let Ok(mut c) = auto_cache.lock() {
+                        c.insert(key, pick);
+                    }
+                    pick
+                }
+            }
+        }
+    } else {
+        strategy
+    };
     let (sni_opt, mut parts) = dpi_core::split_once(&buf, strategy_owned);
     let mut delay = match strategy_owned {
         Strategy::SplitWithDelay { delay_ms, .. } => delay_ms,
@@ -451,6 +486,12 @@ async fn main() {
     let listener = TcpListener::bind(&cfg.listen).await.expect("bind");
     let force = cfg.force_target.clone();
     let stats = Arc::new(Stats::default());
+    // Otomatik mod önbelleği: host -> seçilen strateji
+    let auto_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Strategy>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    if cfg.auto {
+        println!("[*] otomatik mod: host başına en iyi taktik seçilir");
+    }
     // 30sn istatistik: UI log kutusunda canlı görünür
     let st_bg = stats.clone();
     tokio::spawn(async move {
@@ -474,8 +515,10 @@ async fn main() {
                 let f = force.clone();
                 let sc = stats.clone();
                 let q = cfg.quiet;
+                let au = cfg.auto;
+                let ac = auto_cache.clone();
                 tokio::spawn(async move {
-                    handle_client(sock, st, f, sc, q).await;
+                    handle_client(sock, st, f, sc, q, au, ac).await;
                 });
             }
             Err(e) => eprintln!("[-] accept: {e}"),

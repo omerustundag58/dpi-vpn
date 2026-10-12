@@ -253,8 +253,7 @@ async fn proxy_http_connect_flow() {
 }
 
 #[tokio::test]
-async fn proxy_reversed_before_flow() {
-    // Ters sıra: hedefe önce kuyruk parça varmalı (goodbyedpi --reverse-frag).
+async fn proxy_reversed_before_flow() {    // Ters sıra: hedefe önce kuyruk parça varmalı (goodbyedpi --reverse-frag).
     let (target_addr, mut rx_data, _rx_gap) = spawn_fake_target().await;
     let proxy_port = free_port().await;
     let mut proxy = tokio::process::Command::new(proxy_bin())

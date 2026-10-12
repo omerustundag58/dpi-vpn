@@ -85,6 +85,7 @@ async fn proxy_start(
             return Err("zaten çalışıyor".into());
         }
     }
+    let auto = mode.as_str() == "otomatik";
     let strategy = match mode.as_str() {
         "parcala" => dpi_core::Strategy::Fragment { chunk_size: 32 },
         "dengeli" => dpi_core::Strategy::RecordSplit { delay_ms },
@@ -93,6 +94,7 @@ async fn proxy_start(
             order: dpi_core::SendOrder::Reversed,
             delay_ms,
         },
+        // otomatik: ilk pakette auto_pick seçer (aşağıda), varsayılan yedek
         _ => dpi_core::Strategy::RecordSplit { delay_ms: 0 },
     };
     let listen = if lan_share { "0.0.0.0:8888" } else { "127.0.0.1:8888" }.to_string();
@@ -106,7 +108,7 @@ async fn proxy_start(
             let _ = app_log.emit("log", LogLine { level, text });
         }
     });
-    let cfg = EngineConfig { strategy, quiet: true };
+    let cfg = EngineConfig { strategy, quiet: true, auto };
     tauri::async_runtime::spawn(engine::serve(listen.clone(), cfg, stats_run, log_tx, stop_rx));
     {
         let mut st = state.lock().map_err(|e| e.to_string())?;
@@ -370,7 +372,7 @@ fn self_test() -> i32 {
         };
         let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
         drop(listener);
-        let cfg = EngineConfig { strategy: dpi_core::Strategy::RecordSplit { delay_ms: 0 }, quiet: true };
+        let cfg = EngineConfig { strategy: dpi_core::Strategy::RecordSplit { delay_ms: 0 }, quiet: true, auto: false };
         tokio::spawn(engine::serve(format!("127.0.0.1:{port}"), cfg, stats, log_tx, stop_rx));
         tokio::time::sleep(Duration::from_millis(300)).await;
         let sni = b"t.selftest";

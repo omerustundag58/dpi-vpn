@@ -332,7 +332,18 @@ pub fn auto_strategy(packet: &[u8], candidates: &[Strategy]) -> Option<Strategy>
     fallback.map(|(_, st)| st)
 }
 
-/// Hız öncelikli preset: gecikmesiz bölme. DPI kutularının çoğu
+/// Otomatik strateji: SNI'ı gizleyen ilk taktiği seç (ucuzdan pahalıya).
+/// Ağ probu YOK — assess filtresi + sabit sıra. İlk bağlantıda bir kez çalışır,
+/// sonrası önbellekten gelir. Hiçbiri gizleyemezse varsayılan döner.
+pub fn auto_pick(packet: &[u8]) -> Strategy {
+    const ORDER: [Strategy; 4] = [
+        Strategy::RecordSplit { delay_ms: 0 },
+        Strategy::Custom { cut: CutPos::Before, order: SendOrder::InOrder, delay_ms: 0 },
+        Strategy::Custom { cut: CutPos::Mid, order: SendOrder::Reversed, delay_ms: 0 },
+        Strategy::Split { split_at: 2 },
+    ];
+    auto_strategy(packet, &ORDER).unwrap_or_default()
+}
 /// SNI'ı tek parçada göremeyince geçirir.
 /// Hız istiyorsan bunu kullan.
 pub fn fast_strategy() -> Strategy {
@@ -1490,8 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn allowlist_splits_only_listed() {
-        let allow = ["discord.com", "roblox.com"];
+    fn allowlist_splits_only_listed() {        let allow = ["discord.com", "roblox.com"];
         let pkt = fake_client_hello(b"cdn.discord.com");
         let (hit, parts) = split_allowlist(&pkt, Strategy::default(), &allow);
         assert!(hit);
@@ -1507,5 +1517,16 @@ mod tests {
         // TLS değilse bölünmez
         let (hit4, p4) = split_allowlist(b"GET /", Strategy::default(), &allow);
         assert!(!hit4 && p4 == vec![b"GET /".to_vec()]);
+    }
+
+    #[test]
+    fn auto_pick_hides_and_caches() {
+        let pkt = fake_client_hello(b"oto-pick.com");
+        // normal hello'da ilk gizleyen (record-split) seçilir
+        assert_eq!(auto_pick(&pkt), Strategy::RecordSplit { delay_ms: 0 });
+        // TLS değilse varsayılan
+        assert_eq!(auto_pick(b"GET /"), Strategy::default());
+        // seçilen gerçekten gizler
+        assert_eq!(assess(&pkt, auto_pick(&pkt)), Visibility::Hidden);
     }
 }

@@ -4,7 +4,7 @@
 //! C ABI stub'ları (dpi_android_*) korundu; JNI fonksiyonları eklendi.
 #![cfg(target_os = "android")]
 
-use crate::{dpi_version, find_sni, should_process, split_client_hello, split_records, CutPos, SendOrder, Strategy};
+use crate::{dpi_version, find_sni, should_process, split_client_hello, split_quic_initial, split_records, CutPos, SendOrder, Strategy};
 use jni::objects::{JByteArray, JClass};
 use jni::sys::jboolean;
 use jni::JNIEnv;
@@ -185,6 +185,38 @@ pub extern "system" fn Java_com_dpivpn_DpiJni_splitCustom<'local>(
                 parts.swap(0, 1);
             }
             parts
+        }
+        None => vec![],
+    };
+    parts_to_java(&mut env, out)
+}
+
+/// byte[][] döner: QUIC Initial bölme (2 datagram ya da aynen).
+/// QUIC engelle kapalıysa Android UDP yolunda kullanılır.
+#[no_mangle]
+pub extern "system" fn Java_com_dpivpn_DpiJni_splitQuic<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    packet: JByteArray<'local>,
+) -> jni::sys::jobjectArray {
+    let out: Vec<Vec<u8>> = match read_bytes(&mut env, packet) {
+        Some(p) => split_quic_initial(&p),
+        None => vec![],
+    };
+    parts_to_java(&mut env, out)
+}
+
+/// byte[][] döner: otomatik taktik (auto_pick + bölme).
+#[no_mangle]
+pub extern "system" fn Java_com_dpivpn_DpiJni_splitAuto<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    packet: JByteArray<'local>,
+) -> jni::sys::jobjectArray {
+    let out: Vec<Vec<u8>> = match read_bytes(&mut env, packet) {
+        Some(p) => {
+            let st = crate::auto_pick(&p);
+            split_client_hello(&p, st)
         }
         None => vec![],
     };

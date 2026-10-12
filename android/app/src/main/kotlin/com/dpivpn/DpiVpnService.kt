@@ -36,7 +36,7 @@ class DpiVpnService : VpnService() {
         private val PROFILE_DELAY = longArrayOf(4, 3, 5, 3, 0, 1, 0, 5)
         private val PROFILE_NAMES = arrayOf("Türk Telekom", "TT Alternatif", "Superonline",
             "SOL Alternatif", "Vodafone", "Turkcell Mobil", "Vodafone Mobil", "Telekom Mobil")
-        private val MODE_NAMES = arrayOf("Hızlı", "Dengeli", "Parçala")
+        private val MODE_NAMES = arrayOf("Hızlı", "Dengeli", "Parçala", "Ters", "Otomatik")
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -62,7 +62,7 @@ class DpiVpnService : VpnService() {
             return START_NOT_STICKY
         }
         profile = (intent?.getIntExtra("profile", 0) ?: 0).coerceIn(0, 7)
-        mode = (intent?.getIntExtra("mode", 0) ?: 0).coerceIn(0, 3)
+        mode = (intent?.getIntExtra("mode", 0) ?: 0).coerceIn(0, 4)
         val customDns = intent?.getBooleanExtra("custom_dns", false) ?: false
         quicBlock = intent?.getBooleanExtra("quic_block", true) ?: true
         @Suppress("UNCHECKED_CAST")
@@ -347,6 +347,7 @@ class DpiVpnService : VpnService() {
     private fun sendSplit(conn: TcpConn, data: ByteArray) {
         val delayMs = PROFILE_DELAY[profile]
         val parts: Array<ByteArray> = when (mode) {
+            4 -> DpiJni.splitAuto(data)             // Otomatik: pakete göre en iyi taktik
             3 -> DpiJni.splitCustom(data, 0L, 1, 1) // Ters: SNI öncesi + ters sıra
             2 -> DpiJni.splitTcp(data, 0L)          // Parçala: düz TCP bölme
             else -> DpiJni.splitRecords(data)       // Hızlı/Dengeli: record-split
@@ -522,7 +523,14 @@ class DpiVpnService : VpnService() {
             fresh
         }
         try {
-            ch.write(ByteBuffer.wrap(payload))
+            if (!quicBlock && dstPort == 443) {
+                // QUIC relay: Initial SNI'sı datagramlara bölünür (sunucu birleştirir)
+                for (part in DpiJni.splitQuic(payload)) {
+                    if (part.isNotEmpty()) ch.write(ByteBuffer.wrap(part))
+                }
+            } else {
+                ch.write(ByteBuffer.wrap(payload))
+            }
             bytesUp.addAndGet(payload.size.toLong())
         } catch (_: Exception) {
             udpMap.remove(key)

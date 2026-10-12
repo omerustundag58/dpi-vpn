@@ -108,6 +108,7 @@ fn plain_http_target(header: &[u8]) -> Option<String> {
 pub struct EngineConfig {
     pub strategy: Strategy,
     pub quiet: bool,
+    pub auto: bool,
 }
 
 /// CONNECT/düz-HTTP hedef portları: yalnızca bilinen web portları.
@@ -141,6 +142,7 @@ async fn handle_client(
     mut inbound: TcpStream,
     strategy: Strategy,
     quiet: bool,
+    auto: bool,
     stats: Arc<Stats>,
     log: Log,
 ) {
@@ -241,6 +243,8 @@ async fn handle_client(
     }
     buf = read_tls_full(&mut inbound, buf).await;
 
+    // Otomatik mod: pakete göre en iyi taktik (önbelleksiz, deterministik).
+    let strategy = if auto { dpi_core::auto_pick(&buf) } else { strategy };
     let (sni_opt, mut parts) = dpi_core::split_once(&buf, strategy);
     let mut delay = match strategy {
         Strategy::SplitWithDelay { delay_ms, .. } => delay_ms,
@@ -344,8 +348,9 @@ pub async fn serve(
                     let sc = stats.clone();
                     let lg = log.clone();
                     let q = cfg.quiet;
+                    let au = cfg.auto;
                     tokio::spawn(async move {
-                        handle_client(sock, st, q, sc, lg).await;
+                        handle_client(sock, st, q, au, sc, lg).await;
                     });
                 }
                 Err(_) => break,
