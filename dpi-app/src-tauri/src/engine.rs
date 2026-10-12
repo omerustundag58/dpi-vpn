@@ -110,6 +110,33 @@ pub struct EngineConfig {
     pub quiet: bool,
 }
 
+/// CONNECT/düz-HTTP hedef portları: yalnızca bilinen web portları.
+const ALLOWED_PORTS: [u16; 4] = [80, 443, 563, 8443];
+
+fn port_allowed(hostport: &str) -> bool {
+    let port = if hostport.starts_with('[') {
+        hostport.rsplit("]:").next().unwrap_or("").split(':').next().unwrap_or("")
+    } else {
+        hostport.rsplit(':').next().unwrap_or("")
+    };
+    port.parse::<u16>().map(|p| ALLOWED_PORTS.contains(&p)).unwrap_or(false)
+}
+
+/// Yarım gelen TLS kaydını tamamla (record başlığındaki uzunluğa kadar oku).
+async fn read_tls_full(inbound: &mut TcpStream, mut buf: Vec<u8>) -> Vec<u8> {
+    if buf.len() >= 5 && buf[0] == 0x16 {
+        let total = (5 + u16::from_be_bytes([buf[3], buf[4]]) as usize).min(16384 + 5);
+        while buf.len() < total {
+            let mut more = vec![0u8; 4096];
+            match tokio::time::timeout(Duration::from_secs(3), inbound.read(&mut more)).await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(m)) => buf.extend_from_slice(&more[..m]),
+            }
+        }
+    }
+    buf
+}
+
 async fn handle_client(
     mut inbound: TcpStream,
     strategy: Strategy,
@@ -146,7 +173,7 @@ async fn handle_client(
             .chars()
             .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == ':' || *c == '[' || *c == ']')
             .collect();
-        if clean.is_empty() || !clean.contains(':') {
+        if clean.is_empty() || !clean.contains(':') || !port_allowed(&clean) {
             return;
         }
         connect_host = Some(clean);
@@ -161,6 +188,7 @@ async fn handle_client(
                 Ok(Ok(m)) => buf.extend_from_slice(&tls[..m]),
             }
         }
+        buf = read_tls_full(&mut inbound, buf).await;
     } else if head.len() >= 4 && http_method(&head) {
         let mut raw = head.clone();
         while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -174,8 +202,8 @@ async fn handle_client(
             }
         }
         let target = match plain_http_target(&raw) {
-            Some(t) => t,
-            None => return,
+            Some(t) if port_allowed(&t) => t,
+            _ => return,
         };
         emit(&log, format!("[+] hedef(http): {target}"));
         let mut outbound = match TcpStream::connect(&target).await {
@@ -211,6 +239,7 @@ async fn handle_client(
     } else {
         buf = head;
     }
+    buf = read_tls_full(&mut inbound, buf).await;
 
     let (sni_opt, mut parts) = dpi_core::split_once(&buf, strategy);
     let mut delay = match strategy {

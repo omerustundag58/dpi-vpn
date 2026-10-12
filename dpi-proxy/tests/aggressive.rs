@@ -312,8 +312,7 @@ async fn proxy_reversed_before_flow() {
 }
 
 #[tokio::test]
-async fn proxy_plain_http_flow() {
-    // Duz HTTP: GET absolute-URI -> hedefe eksiksiz gitmeli.
+async fn proxy_plain_http_flow() {    // Duz HTTP: GET absolute-URI -> hedefe eksiksiz gitmeli.
     let (target_addr, mut rx_data, _rx_gap) = spawn_fake_target().await;
     let proxy_port = free_port().await;
     let mut proxy = tokio::process::Command::new(proxy_bin())

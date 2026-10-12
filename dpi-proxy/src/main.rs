@@ -133,6 +133,21 @@ fn host_of(connect_host: &Option<String>, buf: &[u8], sni: Option<(usize, usize)
 
 /// Önceden parse edilmiş SNI ile hedef üret (hızlı yol, ikinci parse yok).
 /// Test edilebilir saf fonksiyon.
+///
+/// CONNECT/düz-HTTP hedef portları: yalnızca bilinen web portları.
+/// (Apache AllowCONNECT + Squid Safe_ports standardı — açık relay/spam engeli.)
+/// SMTP(25), SSH(22) gibi tüneller reddedilir.
+const ALLOWED_PORTS: [u16; 4] = [80, 443, 563, 8443];
+
+fn port_allowed(hostport: &str) -> bool {
+    // IPv6 "[::1]:443" biçiminde son ':' sonrası porttur
+    let port = if hostport.starts_with('[') {
+        hostport.rsplit("]:").next().unwrap_or("").split(':').next().unwrap_or("")
+    } else {
+        hostport.rsplit(':').next().unwrap_or("")
+    };
+    port.parse::<u16>().map(|p| ALLOWED_PORTS.contains(&p)).unwrap_or(false)
+}
 fn resolve_target_with_sni(
     buf: &[u8],
     sni: Option<(usize, usize)>,
@@ -150,6 +165,23 @@ fn resolve_target_with_sni(
         }
         format!("{clean}:443")
     })
+}
+
+/// Yarım gelen TLS kaydını tamamla (record başlığındaki uzunluğa kadar oku).
+/// En fazla 16KB+5, her parça 3sn timeout. TLS değilse aynen döner.
+async fn read_tls_full(inbound: &mut TcpStream, mut buf: Vec<u8>) -> Vec<u8> {
+    if buf.len() >= 5 && buf[0] == 0x16 {
+        let total = 5 + u16::from_be_bytes([buf[3], buf[4]]) as usize;
+        let total = total.min(16384 + 5);
+        while buf.len() < total {
+            let mut more = vec![0u8; 4096];
+            match tokio::time::timeout(Duration::from_secs(3), inbound.read(&mut more)).await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(m)) => buf.extend_from_slice(&more[..m]),
+            }
+        }
+    }
+    buf
 }
 
 /// Basit hedef çözümleme: ilk pakette SNI varsa ona bağlan,
@@ -192,7 +224,7 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
             .chars()
             .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == ':' || *c == '[' || *c == ']')
             .collect();
-        if clean.is_empty() || !clean.contains(':') {
+        if clean.is_empty() || !clean.contains(':') || !port_allowed(&clean) {
             return;
         }
         connect_host = Some(clean);
@@ -209,6 +241,7 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
                 Ok(Ok(m)) => buf.extend_from_slice(&tls[..m]),
             }
         }
+        buf = read_tls_full(&mut inbound, buf).await;
     } else if head.len() >= 4 && http_method(&head) {
         // Düz HTTP (https değil): absolute-URI ya da Host başlığından hedefi bul,
         // isteği ortadan bölerek ilet (Host DPI'dan gizlenir), sonra relay.
@@ -226,11 +259,13 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
         let target = match force_target.clone() {
             Some(f) => f,
             None => match plain_http_target(&raw) {
-                Some(t) => t,
-                None => return,
+                Some(t) if port_allowed(&t) => t,
+                _ => return,
             },
         };
-        println!("[+] hedef(http): {target}");
+        if !quiet {
+            println!("[+] hedef(http): {target}");
+        }
         let mut outbound = match TcpStream::connect(&target).await {
             Ok(s) => s,
             Err(e) => {
@@ -267,6 +302,9 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
     } else {
         buf = head;
     }
+    // TLS kaydı yarım geldiyse tamamını bekle (tek read bölünebilir!).
+    // Yarım hello üzerinden SNI aramak yanlış kesime yol açar.
+    buf = read_tls_full(&mut inbound, buf).await;
 
     // Hızlı yol: tek parse ile SNI + parçalar (Android'de pil/CPU dostu).
     let strategy_owned = strategy;
@@ -300,7 +338,9 @@ async fn handle_client(mut inbound: TcpStream, strategy: Strategy, force_target:
             }
         },
     };
-    println!("[+] hedef: {target}");
+    if !quiet {
+        println!("[+] hedef: {target}");
+    }
 
     let mut outbound = match TcpStream::connect(&target).await {
         Ok(s) => s,
