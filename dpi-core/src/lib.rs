@@ -639,7 +639,7 @@ pub fn split_quic_initial(packet: &[u8]) -> Vec<Vec<u8>> {
         Some(q) => q,
         None => return vec![packet.to_vec()],
     };
-    let (coff, clen, _foff, fhlen) = match quic_crypto_span(packet, &q) {
+    let (coff, clen, _foff, _fhlen) = match quic_crypto_span(packet, &q) {
         Some(s) => s,
         None => return vec![packet.to_vec()],
     };
@@ -1467,7 +1467,7 @@ mod tests {
 
     #[test]
     fn bench_plan_vs_alloc() {
-        let pkt = fake_client_hello(&vec![b'p'; 120]);
+        let pkt = fake_client_hello(&[b'p'; 120]);
         let iters = 50_000u32;
         let t0 = std::time::Instant::now();
         let mut n = 0;
