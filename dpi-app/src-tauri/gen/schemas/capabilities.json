@@ -1,1 +1,1 @@
-{}
+{"dpi-vpn-main":{"identifier":"dpi-vpn-main","description":"DPI VPN ana penceresi","local":true,"windows":["main"],"permissions":["core:event:allow-listen","core:event:allow-emit"]}}
