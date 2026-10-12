@@ -21,7 +21,7 @@ async fn proxy_rejects_bad_ports() {
     let proxy_port = free_port2().await;
     let mut proxy = tokio::process::Command::new(proxy_bin2())
         .args(["--listen", &format!("127.0.0.1:{proxy_port}")])
-        .spawn().unwrap();
+        .kill_on_drop(true).spawn().unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     for target in ["smtp.ornek.test:25", "ornek.test:22", "ornek.test:8080"] {

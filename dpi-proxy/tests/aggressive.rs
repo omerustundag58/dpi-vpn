@@ -96,57 +96,31 @@ fn proxy_bin() -> std::path::PathBuf {
 
 #[tokio::test]
 async fn proxy_connect_ipv6_target() {
-    // Firefox Happy Eyeballs: CONNECT [::1]:port dusurulmemeli.
-    let l = TcpListener::bind("[::1]:0").await.expect("v6 dinle");
-    let port = l.local_addr().unwrap().port();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    tokio::spawn(async move {
-        if let Ok((mut s, _)) = l.accept().await {
-            let mut all = vec![];
-            let mut buf = [0u8; 4096];
-            // Parçalı gönderimde okumalar bölünebilir: 50B sonrası 400ms daha bekle.
-            loop {
-                match tokio::time::timeout(Duration::from_millis(400), s.read(&mut buf)).await {
-                    Ok(Ok(0)) | Err(_) => break,
-                    Ok(Ok(n)) => {
-                        all.extend_from_slice(&buf[..n]);
-                        if all.len() >= 50 {
-                            // son parça yolda olabilir — kısa ek bekleme
-                            match tokio::time::timeout(Duration::from_millis(400), s.read(&mut buf)).await {
-                                Ok(Ok(m)) if m > 0 => {
-                                    all.extend_from_slice(&buf[..m]);
-                                }
-                                _ => {}
-                            }
-                            break;
-                        }
-                    }
-                    Ok(Err(_)) => break,
-                }
-                if all.len() > 8192 {
-                    break;
-                }
-            }
-            let _ = tx.send(all);
-        }
-    });
+    // Firefox Happy Eyeballs: CONNECT [::1]:443 dusurulmemeli (koseli parantez parse).
+    // Port filtresi (80/443/563/8443) rastgele test portunu reddedecegi icin
+    // veri yolu force-target ile sahte hedefe tasinir.
+    let (target_addr, mut rx_data, _rx_gap) = spawn_fake_target().await;
     let proxy_port = free_port().await;
     let mut proxy = tokio::process::Command::new(proxy_bin())
         .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
-               "--delay-ms", "5"])
-        .spawn().unwrap();
+               "--delay-ms", "5",
+               "--force-target", &target_addr])
+        .kill_on_drop(true).spawn().unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let hello = fake_client_hello(b"ipv6-test.com");
     let mut cli = TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await.unwrap();
-    cli.write_all(format!("CONNECT [::1]:{port} HTTP/1.1\r\nHost: [::1]:{port}\r\n\r\n").as_bytes()).await.unwrap();
+    cli.write_all(b"CONNECT [::1]:443 HTTP/1.1\r\nHost: [::1]:443\r\n\r\n").await.unwrap();
     let mut resp = vec![0u8; 64];
     let n = tokio::time::timeout(Duration::from_secs(3), cli.read(&mut resp)).await.expect("200 yok").unwrap();
-    assert!(String::from_utf8_lossy(&resp[..n]).contains("200"), "IPv6 CONNECT 200 donmedi");
+    assert!(
+        String::from_utf8_lossy(&resp[..n]).contains("200"),
+        "IPv6 CONNECT 200 donmedi, gelen: {:02X?}",
+        &resp[..n.min(32)]
+    );
     cli.write_all(&hello).await.unwrap();
     cli.flush().await.unwrap();
-    let got = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("timeout").expect("kanal");
-    assert_eq!(got.len(), hello.len(), "IPv6 uzunluk: gelen={} beklenen={}", got.len(), hello.len());
+    let got = tokio::time::timeout(Duration::from_secs(5), rx_data.recv()).await.expect("timeout").expect("kanal");
     assert_eq!(got, hello, "IPv6 hedefe veri bozuk");
     proxy.kill().await.ok();
 }
@@ -160,7 +134,7 @@ async fn proxy_splits_sni_and_preserves_bytes() {
         .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
                "--delay-ms", "50",
                "--force-target", &target_addr])
-        .spawn()
+        .kill_on_drop(true).spawn()
         .expect("proxy başlatılamadı");
 
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -191,7 +165,7 @@ async fn proxy_drops_non_sni_gracefully() {    let (target_addr, mut rx_data, _r
     let mut proxy = tokio::process::Command::new(proxy_bin())
         .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
                "--force-target", &target_addr])
-        .spawn().unwrap();
+        .kill_on_drop(true).spawn().unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // SNI'sız HTTP gönder — force-target olsa bile proxy SNI arar mı?
@@ -225,7 +199,7 @@ async fn proxy_50_concurrent_no_crash() {
         .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
                "--delay-ms", "1",
                "--force-target", &hole_addr])
-        .spawn().unwrap();
+        .kill_on_drop(true).spawn().unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let hello = fake_client_hello(b"yuk-test.com");
@@ -255,7 +229,7 @@ async fn proxy_http_connect_flow() {
         .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
                "--delay-ms", "50",
                "--force-target", &target_addr])
-        .spawn().unwrap();
+        .kill_on_drop(true).spawn().unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let hello = fake_client_hello(b"connect-test.com");
@@ -287,7 +261,7 @@ async fn proxy_reversed_before_flow() {
         .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
                "--cut", "before", "--reverse", "--delay-ms", "20",
                "--force-target", &target_addr])
-        .spawn().unwrap();
+        .kill_on_drop(true).spawn().unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let hello = fake_client_hello(b"ters-test.com");
@@ -318,7 +292,7 @@ async fn proxy_plain_http_flow() {    // Duz HTTP: GET absolute-URI -> hedefe ek
     let mut proxy = tokio::process::Command::new(proxy_bin())
         .args(["--listen", &format!("127.0.0.1:{proxy_port}"),
                "--force-target", &target_addr])
-        .spawn().unwrap();
+        .kill_on_drop(true).spawn().unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let req = b"GET http://ornek.test/sayfa?q=1 HTTP/1.1\r\nHost: ornek.test\r\nConnection: close\r\n\r\n";
