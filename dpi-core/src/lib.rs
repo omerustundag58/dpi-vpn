@@ -263,6 +263,54 @@ pub fn split_records(packet: &[u8]) -> Vec<Vec<u8>> {
     vec![r1, r2]
 }
 
+/// Strateji değerlendirmesi: bölünmüş parçaların her birinde SNI görünürlüğü.
+/// Otomatik mod seçiminin temeli — dene, ölç, en gizliyi seç.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    /// SNI hiçbir tek parçada bütün halde yok (hedeflenen).
+    Hidden,
+    /// SNI bir parçada bütün halde görünüyor (kesim SNI dışına düştü).
+    Visible { piece: usize },
+    /// SNI bulunamadı (TLS değil ya da hello değil) — değerlendirilemez.
+    NoSni,
+}
+
+/// `packet` + `strategy` için görünürlük raporu.
+pub fn assess(packet: &[u8], strategy: Strategy) -> Visibility {
+    let sni = match find_sni(packet) {
+        Some((s, e)) => &packet[s..e],
+        None => return Visibility::NoSni,
+    };
+    if sni.is_empty() {
+        return Visibility::NoSni;
+    }
+    for (i, part) in split_client_hello(packet, strategy).iter().enumerate() {
+        if part.len() >= sni.len() && part.windows(sni.len()).any(|w| w == sni) {
+            return Visibility::Visible { piece: i };
+        }
+    }
+    Visibility::Hidden
+}
+
+/// Birden çok stratejiyi dener, SNI'ı gizleyeni seçer.
+/// Hepsi gösteriyorsa en çok parçalayanı, hiçbiri gizleyemiyorsa None.
+pub fn auto_strategy(packet: &[u8], candidates: &[Strategy]) -> Option<Strategy> {
+    let mut fallback: Option<(usize, Strategy)> = None;
+    for &st in candidates {
+        match assess(packet, st) {
+            Visibility::Hidden => return Some(st),
+            Visibility::Visible { .. } => {
+                let n = split_client_hello(packet, st).len();
+                if fallback.map(|(m, _)| n > m).unwrap_or(true) {
+                    fallback = Some((n, st));
+                }
+            }
+            Visibility::NoSni => {}
+        }
+    }
+    fallback.map(|(_, st)| st)
+}
+
 /// Hız öncelikli preset: gecikmesiz bölme. DPI kutularının çoğu
 /// SNI'ı tek parçada göremeyince geçirir; 10ms gecikme hıza mal olur.
 /// Hız istiyorsan bunu kullan.
@@ -819,6 +867,45 @@ mod tests {
         for h in ["discord.com", "govtrevil.com", "fakegoogle.com.tr.evil.org", "", "com"] {
             assert!(!is_excluded(h), "{h} muaf OLMAMALI");
         }
+    }
+
+    #[test]
+    fn assess_grades_strategies() {
+        let pkt = fake_client_hello(b"deger-test.com");
+        // gizleyenler Hidden
+        for st in [
+            Strategy::Split { split_at: 2 },
+            Strategy::RecordSplit { delay_ms: 0 },
+            Strategy::Fragment { chunk_size: 7 },
+            Strategy::Custom { cut: CutPos::Mid, order: SendOrder::InOrder, delay_ms: 0 },
+        ] {
+            assert_eq!(assess(&pkt, st), Visibility::Hidden, "{st:?}");
+        }
+        // SNI dışına kesen At(2) -> parça1'de bütün SNI görünür
+        assert!(matches!(
+            assess(&pkt, Strategy::Custom { cut: CutPos::At(2), order: SendOrder::InOrder, delay_ms: 0 }),
+            Visibility::Visible { .. }
+        ));
+        // TLS değilse NoSni
+        assert_eq!(assess(b"GET / HTTP/1.0", Strategy::default()), Visibility::NoSni);
+        assert_eq!(assess(&[], Strategy::default()), Visibility::NoSni);
+    }
+
+    #[test]
+    fn auto_strategy_picks_hider() {
+        let pkt = fake_client_hello(b"oto-test.com");
+        let cands = [
+            Strategy::Custom { cut: CutPos::At(2), order: SendOrder::InOrder, delay_ms: 0 },
+            Strategy::Fragment { chunk_size: 5 },
+        ];
+        // ilk aday gösterir, ikinci gizler -> ikinci seçilir
+        assert_eq!(auto_strategy(&pkt, &cands), Some(Strategy::Fragment { chunk_size: 5 }));
+        // hepsi gizliyorsa ilk gizleyen döner
+        let both = [Strategy::Split { split_at: 2 }, Strategy::RecordSplit { delay_ms: 0 }];
+        assert_eq!(auto_strategy(&pkt, &both), Some(Strategy::Split { split_at: 2 }));
+        // boş liste / SNI yoksa None
+        assert_eq!(auto_strategy(&pkt, &[]), None);
+        assert_eq!(auto_strategy(b"GET /", &both), None);
     }
 
     #[test]
