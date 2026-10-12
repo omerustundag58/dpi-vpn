@@ -347,8 +347,26 @@ const EXCLUDED_SUFFIXES: [&str; 4] = ["gov.tr", "com.tr", "google.com", "googlea
 
 /// host bu listeye giriyor mu? (alt alan adları dahil)
 pub fn is_excluded(host: &str) -> bool {
+    matches_suffix_list(host, &EXCLUDED_SUFFIXES)
+}
+
+fn matches_suffix_list(host: &str, list: &[&str]) -> bool {
     let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    EXCLUDED_SUFFIXES.iter().any(|s| h == *s || h.ends_with(&format!(".{s}")))
+    list.iter().any(|s| h == *s || h.ends_with(&format!(".{s}")))
+}
+
+/// Allowlist modu: SADECE listedeki hostlar bölünür, gerisi ham geçer.
+/// Sansürlü listesi belli olan ağlarda hız + pil kazandırır.
+/// Dönüş: (bölündü_mü, parçalar).
+pub fn split_allowlist(packet: &[u8], strategy: Strategy, allow: &[&str]) -> (bool, Vec<Vec<u8>>) {
+    let hit = find_sni(packet)
+        .map(|(s, e)| matches_suffix_list(&String::from_utf8_lossy(&packet[s..e]), allow))
+        .unwrap_or(false);
+    if hit {
+        (true, split_client_hello(packet, strategy))
+    } else {
+        (false, vec![packet.to_vec()])
+    }
 }
 
 /// Sıfır kopyalı bölme planı: parça bayt aralıkları, tahsis YOK.
@@ -1412,8 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_ranges_match_materialized() {
-        let pkt = fake_client_hello(b"plan-test.com");
+    fn plan_ranges_match_materialized() {        let pkt = fake_client_hello(b"plan-test.com");
         let strats = [
             Strategy::Split { split_at: 2 },
             Strategy::SplitWithDelay { split_at: 2, delay_ms: 5 },
@@ -1470,5 +1487,25 @@ mod tests {
             plan.as_nanos() as f64 / iters as f64,
         );
         assert_eq!(n, m);
+    }
+
+    #[test]
+    fn allowlist_splits_only_listed() {
+        let allow = ["discord.com", "roblox.com"];
+        let pkt = fake_client_hello(b"gateway.discord.gg");
+        let (hit, parts) = split_allowlist(&pkt, Strategy::default(), &allow);
+        assert!(hit);
+        assert_eq!(parts.len(), 2);
+        // listede yoksa ham tek parça
+        let pkt2 = fake_client_hello(b"ornek.com");
+        let (hit2, parts2) = split_allowlist(&pkt2, Strategy::default(), &allow);
+        assert!(!hit2);
+        assert_eq!(parts2, vec![pkt2.clone()]);
+        // boş liste: kimse bölünmez
+        let (hit3, _) = split_allowlist(&pkt, Strategy::default(), &[]);
+        assert!(!hit3);
+        // TLS değilse bölünmez
+        let (hit4, p4) = split_allowlist(b"GET /", Strategy::default(), &allow);
+        assert!(!hit4 && p4 == vec![b"GET /".to_vec()]);
     }
 }
