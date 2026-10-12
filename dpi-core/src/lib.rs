@@ -332,8 +332,7 @@ pub fn auto_strategy(packet: &[u8], candidates: &[Strategy]) -> Option<Strategy>
     fallback.map(|(_, st)| st)
 }
 
-/// Hız öncelikli preset: gecikmesiz bölme. DPI kutularının çoğu
-/// SNI'ı tek parçada göremeyince geçirir; 10ms gecikme hıza mal olur.
+/// Hız öncelikli preset: gecikmesiz bölme. DPI kutularının çoğu/// SNI'ı tek parçada göremeyince geçirir; 10ms gecikme hıza mal olur.
 /// Hız istiyorsan bunu kullan.
 pub fn fast_strategy() -> Strategy {
     Strategy::Split { split_at: 2 }
@@ -410,6 +409,246 @@ pub fn should_process(port: u16, first_bytes: &[u8]) -> bool {
 #[no_mangle]
 pub extern "C" fn dpi_version() -> i32 {
     1
+}
+
+// ================= QUIC Initial bölme =================
+// QUIC (UDP) ham soket olmadan bölünebilir: sunucu CRYPTO akışını
+// offset'lerle birleştirir, datagram sırası/bölünmesi normal karşılanır.
+// SNI, CRYPTO içindeki TLS hello'da bulunur; kesim SNI ortasındandır.
+
+/// QUIC değişken tamsayısı oku. Dönüş: (değer, yeni_pos).
+fn qvarint_read(buf: &[u8], pos: usize) -> Option<(u64, usize)> {
+    if pos >= buf.len() {
+        return None;
+    }
+    match buf[pos] >> 6 {
+        0 => Some((buf[pos] as u64, pos + 1)),
+        1 => {
+            if pos + 2 > buf.len() {
+                return None;
+            }
+            Some((((buf[pos] & 0x3F) as u64) << 8 | buf[pos + 1] as u64, pos + 2))
+        }
+        2 => {
+            if pos + 4 > buf.len() {
+                return None;
+            }
+            let v = ((buf[pos] & 0x3F) as u64) << 24
+                | (buf[pos + 1] as u64) << 16
+                | (buf[pos + 2] as u64) << 8
+                | buf[pos + 3] as u64;
+            Some((v, pos + 4))
+        }
+        _ => {
+            if pos + 8 > buf.len() {
+                return None;
+            }
+            let mut v = 0u64;
+            for b in &buf[pos + 1..pos + 8] {
+                v = (v << 8) | *b as u64;
+            }
+            v |= ((buf[pos] & 0x3F) as u64) << 56;
+            Some((v, pos + 8))
+        }
+    }
+}
+
+/// QUIC değişken tamsayısı yaz (en kısa kodlama).
+fn qvarint_encode(v: u64) -> Vec<u8> {
+    if v < 64 {
+        vec![v as u8]
+    } else if v < 16384 {
+        vec![0x40 | (v >> 8) as u8, v as u8]
+    } else if v < 1_073_741_824 {
+        vec![0x80 | (v >> 24) as u8, (v >> 16) as u8, (v >> 8) as u8, v as u8]
+    } else {
+        let mut out = vec![0xC0];
+        out.extend_from_slice(&v.to_be_bytes());
+        out
+    }
+}
+
+/// Parse edilmiş QUIC Initial başlığı.
+struct QuicInitial {
+    dcid: Vec<u8>,
+    scid: Vec<u8>,
+    token: Vec<u8>,
+    pn_len: usize,
+    pn: u32,
+    payload_off: usize, // CRYPTO çerçevelerinin başladığı offset (pn dahil değil: pn_off)
+    pn_off: usize,
+    payload_len: usize,
+}
+
+fn parse_quic_initial(packet: &[u8]) -> Option<QuicInitial> {
+    if packet.len() < 7 {
+        return None;
+    }
+    let flags = packet[0];
+    if flags & 0x80 == 0 || flags & 0x40 == 0 {
+        return None; // uzun başlık + sabit bit şart
+    }
+    if u32::from_be_bytes([packet[1], packet[2], packet[3], packet[4]]) != 1 {
+        return None; // yalnızca QUIC v1
+    }
+    let mut pos = 5;
+    if pos >= packet.len() {
+        return None;
+    }
+    let dcid_len = packet[pos] as usize;
+    pos += 1;
+    if pos + dcid_len > packet.len() {
+        return None;
+    }
+    let dcid = packet[pos..pos + dcid_len].to_vec();
+    pos += dcid_len;
+    if pos >= packet.len() {
+        return None;
+    }
+    let scid_len = packet[pos] as usize;
+    pos += 1;
+    if pos + scid_len > packet.len() {
+        return None;
+    }
+    let scid = packet[pos..pos + scid_len].to_vec();
+    pos += scid_len;
+    let (token_len, p2) = qvarint_read(packet, pos)?;
+    pos = p2;
+    if pos + token_len as usize > packet.len() {
+        return None;
+    }
+    let token = packet[pos..pos + token_len as usize].to_vec();
+    pos += token_len as usize;
+    let (length, p3) = qvarint_read(packet, pos)?;
+    pos = p3;
+    let payload_len = length as usize;
+    if pos + payload_len > packet.len() {
+        return None;
+    }
+    let pn_len = (flags & 0x03) as usize + 1;
+    if pos + pn_len > packet.len() {
+        return None;
+    }
+    let mut pn: u32 = 0;
+    for b in &packet[pos..pos + pn_len] {
+        pn = (pn << 8) | *b as u32;
+    }
+    Some(QuicInitial { dcid, scid, token, pn_len, pn, pn_off: pos, payload_off: pos + pn_len, payload_len })
+}
+
+/// QUIC Initial içindeki CRYPTO verisini çıkar (tek CRYPTO + dolgu varsayımı).
+/// Dönüş: (crypto_off, crypto_len, frame_off, frame_header_len).
+fn quic_crypto_span(packet: &[u8], q: &QuicInitial) -> Option<(usize, usize, usize, usize)> {
+    let mut pos = q.payload_off;
+    let end = q.pn_off + q.payload_len;
+    // baştaki dolgu baytlarını atla
+    while pos < end && packet[pos] == 0x00 {
+        pos += 1;
+    }
+    if pos >= end || packet[pos] != 0x06 {
+        return None; // ilk çerçeve CRYPTO değil
+    }
+    let frame_off = pos;
+    pos += 1;
+    let (offset, p2) = qvarint_read(packet, pos)?;
+    if offset != 0 {
+        return None; // ilk CRYPTO offset 0 olmalı (bölünmemiş hello)
+    }
+    pos = p2;
+    let (len, p3) = qvarint_read(packet, pos)?;
+    pos = p3;
+    let len = len as usize;
+    if pos + len > end {
+        return None;
+    }
+    // sondaki dolgu serbest; fazlası varsa tek çerçeve varsayımı bozulur — yine de devam
+    Some((pos, len, frame_off, pos - frame_off))
+}
+
+/// CRYPTO verisi içindeki SNI konumunu bul (sahte record başlığıyla find_sni).
+/// Dönüş: crypto'ya göre (sni_start, sni_end).
+fn sni_in_crypto(crypto: &[u8]) -> Option<(usize, usize)> {
+    if crypto.len() < 5 || crypto[0] != 0x01 {
+        return None;
+    }
+    let mut fake = vec![0x16u8, 0x03, 0x01, 0, 0];
+    let len = crypto.len().min(65535);
+    fake[3..5].copy_from_slice(&(len as u16).to_be_bytes());
+    fake.extend_from_slice(&crypto[..len]);
+    find_sni(&fake).map(|(s, e)| (s - 5, e - 5))
+}
+
+/// QUIC Initial datagramını ikiye böl (SNI ortasından).
+/// Her parça geçerli Initial başlıklı ayrı datagramdır; sunucu CRYPTO
+/// akışını offset'lerle birleştirir. Olmazsa tek parça döner.
+pub fn split_quic_initial(packet: &[u8]) -> Vec<Vec<u8>> {
+    let q = match parse_quic_initial(packet) {
+        Some(q) => q,
+        None => return vec![packet.to_vec()],
+    };
+    let (coff, clen, _foff, fhlen) = match quic_crypto_span(packet, &q) {
+        Some(s) => s,
+        None => return vec![packet.to_vec()],
+    };
+    if clen < 16 {
+        return vec![packet.to_vec()];
+    }
+    let crypto = &packet[coff..coff + clen];
+    // kesim: SNI ortası, yoksa crypto ortası
+    let cut_rel = match sni_in_crypto(crypto) {
+        Some((s, e)) => coff + s + (e - s) / 2,
+        None => coff + clen / 2,
+    };
+    if cut_rel <= coff || cut_rel >= coff + clen {
+        return vec![packet.to_vec()];
+    }
+    let off1 = 0usize;
+    let len1 = cut_rel - coff;
+    let off2 = len1;
+    let len2 = clen - len1;
+
+    // CRYPTO çerçevesi kurucu: [0x06][offset][len][veri]
+    fn crypto_frame(offset: usize, data: &[u8]) -> Vec<u8> {
+        let mut f = vec![0x06u8];
+        f.extend(qvarint_encode(offset as u64));
+        f.extend(qvarint_encode(data.len() as u64));
+        f.extend_from_slice(data);
+        f
+    }
+    let f1 = crypto_frame(off1, &packet[cut_rel - len1..cut_rel]);
+    let f2 = crypto_frame(off2, &packet[cut_rel..cut_rel + len2]);
+    // yük + pn uzunlukları 16KB altında kalmalı (2 baytlık Length için)
+    let pn_len = q.pn_len;
+    if f1.len() + pn_len > 16000 || f2.len() + pn_len > 16000 {
+        return vec![packet.to_vec()];
+    }
+
+    // datagram kurucu
+    let build = |pn: u32, frame: &[u8]| -> Vec<u8> {
+        let mut d = vec![packet[0]];
+        d.extend_from_slice(&packet[1..5]); // version
+        d.push(q.dcid.len() as u8);
+        d.extend_from_slice(&q.dcid);
+        d.push(q.scid.len() as u8);
+        d.extend_from_slice(&q.scid);
+        d.extend(qvarint_encode(q.token.len() as u64));
+        d.extend_from_slice(&q.token);
+        let payload_len = pn_len + frame.len();
+        d.extend(qvarint_encode(payload_len as u64));
+        let mask = if pn_len >= 4 { u32::MAX } else { (1u32 << (pn_len * 8)) - 1 };
+        let pn = pn & mask;
+        for i in (0..pn_len).rev() {
+            d.push((pn >> (i * 8)) as u8);
+        }
+        d.extend_from_slice(frame);
+        d
+    };
+    vec![build(q.pn, &f1), build(q.pn.wrapping_add(1), &f2)]
+}
+
+/// QUIC v1 Initial mı? (hızlı ön kontrol)
+pub fn is_quic_initial(packet: &[u8]) -> bool {
+    parse_quic_initial(packet).is_some()
 }
 
 #[cfg(test)]
@@ -1060,5 +1299,80 @@ mod tests {
         let tricky = b"GET http://myhost.com/ HTTP/1.1\r\nHost: myhost.com\r\n\r\n";
         let t2 = disguise_host(tricky);
         assert!(t2.starts_with(b"GET http://myhost.com/"));
+    }
+
+    /// Sentetik QUIC v1 Initial kur (CRYPTO içinde tam hello).
+    fn quic_initial(sni: &[u8]) -> Vec<u8> {
+        let full = fake_client_hello(sni);
+        let hs = &full[5..]; // record başlığını at, handshake mesajı kalır
+        let mut frame = vec![0x06u8, 0x00]; // CRYPTO, offset 0
+        frame.extend(qvarint_encode(hs.len() as u64));
+        frame.extend_from_slice(hs);
+        let mut payload = vec![0x07u8]; // pn=7 (1 bayt)
+        payload.extend_from_slice(&frame);
+        let mut d = vec![0xC0u8, 0, 0, 0, 1]; // long+fixed, v1
+        d.push(8);
+        d.extend_from_slice(&[0x11; 8]); // dcid
+        d.push(8);
+        d.extend_from_slice(&[0x22; 8]); // scid
+        d.extend(qvarint_encode(0)); // token yok
+        d.extend(qvarint_encode(payload.len() as u64));
+        d.extend_from_slice(&payload);
+        d
+    }
+
+    fn quic_crypto_of(dgram: &[u8]) -> Vec<u8> {
+        // ilk CRYPTO çerçevesini çıkar (offset ne olursa olsun — test yardımcısı)
+        let q = parse_quic_initial(dgram).expect("gecerli initial");
+        let mut pos = q.payload_off;
+        let end = q.pn_off + q.payload_len;
+        while pos < end && dgram[pos] == 0x00 {
+            pos += 1;
+        }
+        assert_eq!(dgram[pos], 0x06, "CRYPTO bekleniyor");
+        pos += 1;
+        let (_, p2) = qvarint_read(dgram, pos).unwrap();
+        let (len, p3) = qvarint_read(dgram, p2).unwrap();
+        dgram[p3..p3 + len as usize].to_vec()
+    }
+
+    #[test]
+    fn quic_split_roundtrip_and_hides_sni() {
+        let sni = b"quic-test.com";
+        let pkt = quic_initial(sni);
+        assert!(is_quic_initial(&pkt));
+        let parts = split_quic_initial(&pkt);
+        assert_eq!(parts.len(), 2);
+        // her parça geçerli Initial
+        for p in &parts {
+            assert!(is_quic_initial(p), "parça parse edilmeli");
+        }
+        // CRYPTO akışı birebir birleşir
+        let mut joined = quic_crypto_of(&parts[0]);
+        joined.extend_from_slice(&quic_crypto_of(&parts[1]));
+        assert_eq!(joined, quic_crypto_of(&pkt));
+        // SNI tek datagramda görünmez
+        for p in &parts {
+            assert!(!p.windows(sni.len()).any(|w| w == sni), "SNI sızıyor");
+        }
+        // pn artar
+        let q1 = parse_quic_initial(&parts[0]).unwrap();
+        let q2 = parse_quic_initial(&parts[1]).unwrap();
+        assert_eq!(q2.pn, q1.pn.wrapping_add(1));
+        assert_eq!(q1.dcid, q2.dcid);
+    }
+
+    #[test]
+    fn quic_non_initial_passthrough() {
+        assert_eq!(split_quic_initial(&[]), vec![Vec::<u8>::new()]);
+        let tls = fake_client_hello(b"x.com");
+        assert_eq!(split_quic_initial(&tls), vec![tls.clone()]);
+        // kısa / bozuk başlık
+        assert_eq!(split_quic_initial(&[0xC0, 0, 0]), vec![vec![0xC0, 0, 0]]);
+        // version farklı
+        let mut v2 = quic_initial(b"y.com");
+        v2[4] = 0x02;
+        assert_eq!(split_quic_initial(&v2), vec![v2.clone()]);
+        assert!(!is_quic_initial(&v2));
     }
 }
