@@ -1492,7 +1492,7 @@ mod tests {
     #[test]
     fn allowlist_splits_only_listed() {
         let allow = ["discord.com", "roblox.com"];
-        let pkt = fake_client_hello(b"gateway.discord.gg");
+        let pkt = fake_client_hello(b"cdn.discord.com");
         let (hit, parts) = split_allowlist(&pkt, Strategy::default(), &allow);
         assert!(hit);
         assert_eq!(parts.len(), 2);
