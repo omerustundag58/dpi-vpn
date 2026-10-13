@@ -176,22 +176,35 @@ async fn get_status(state: tauri::State<'_, Mutex<ProxyState>>) -> Result<Status
 
 const IE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
+// Proxy açılmadan önceki (enable, server, override) değerleri; kapatırken geri yüklenir.
+static PREV_PROXY: std::sync::Mutex<Option<(u32, String, String)>> = std::sync::Mutex::new(None);
+
 #[tauri::command]
 fn sysproxy_set(on: bool) -> Result<String, String> {
     use winreg::{enums::*, RegKey};
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu.create_subkey(IE_KEY).map_err(|e| e.to_string())?;
+    let mut prev = PREV_PROXY.lock().map_err(|e| e.to_string())?;
     if on {
-        let (key, _) = hkcu.create_subkey(IE_KEY).map_err(|e| e.to_string())?;
+        if prev.is_none() {
+            let enable = key.get_value::<u32, _>("ProxyEnable").unwrap_or(0);
+            let server = key.get_value::<String, _>("ProxyServer").unwrap_or_default();
+            let over = key.get_value::<String, _>("ProxyOverride").unwrap_or_default();
+            *prev = Some((enable, server, over));
+        }
         key.set_value("ProxyEnable", &1u32).map_err(|e| e.to_string())?;
         key.set_value("ProxyServer", &"http=127.0.0.1:8888;https=127.0.0.1:8888").map_err(|e| e.to_string())?;
         key.set_value("ProxyOverride", &"<local>").map_err(|e| e.to_string())?;
         Ok("sistem proxy açık".into())
     } else {
-        // Eskiyi bilmediğimiz için en güvenli geri dönüş: tamamen kapat.
-        // (tk sürümü eski değeri saklardı; burada da saklamak için state gerekir —
-        //  basitlik adına kapatıyoruz, Windows varsayılanı da kapalıdır.)
-        let (key, _) = hkcu.create_subkey(IE_KEY).map_err(|e| e.to_string())?;
-        key.set_value("ProxyEnable", &0u32).map_err(|e| e.to_string())?;
+        match prev.take() {
+            Some((enable, server, over)) => {
+                key.set_value("ProxyEnable", &enable).map_err(|e| e.to_string())?;
+                key.set_value("ProxyServer", &server).map_err(|e| e.to_string())?;
+                key.set_value("ProxyOverride", &over).map_err(|e| e.to_string())?;
+            }
+            None => key.set_value("ProxyEnable", &0u32).map_err(|e| e.to_string())?,
+        }
         Ok("sistem proxy kapalı".into())
     }
 }
