@@ -326,6 +326,54 @@ async fn handle_client(
     relay(inbound, outbound, stats, &target, total, quiet, log).await;
 }
 
+/// Canlı prob: taktiği gerçek hedefe karşı dene (Shroudly merdiveni).
+async fn probe_strategy(target: &str, buf: &[u8], st: Strategy) -> bool {
+    let (_, mut parts) = dpi_core::split_once(buf, st);
+    if matches!(st, Strategy::Custom { order: dpi_core::SendOrder::Reversed, .. }) && parts.len() == 2 {
+        parts.swap(0, 1);
+    }
+    let mut outbound = match tokio::time::timeout(Duration::from_millis(2500), TcpStream::connect(target)).await {
+        Ok(Ok(s)) => s,
+        _ => return false,
+    };
+    for p in &parts {
+        if tokio::time::timeout(Duration::from_secs(2), outbound.write_all(p)).await.is_err() {
+            return false;
+        }
+    }
+    let mut resp = vec![0u8; 16];
+    match tokio::time::timeout(Duration::from_secs(3), outbound.read(&mut resp)).await {
+        Ok(Ok(n)) => dpi_core::is_server_hello(&resp[..n]),
+        _ => false,
+    }
+}
+
+async fn pick_live(
+    target: &str,
+    host_key: &str,
+    buf: &[u8],
+    cache: &Arc<std::sync::Mutex<std::collections::HashMap<String, Strategy>>>,
+    log: &Log,
+) -> Strategy {
+    for st in dpi_core::ladder() {
+        if dpi_core::assess(buf, st) != dpi_core::Visibility::Hidden {
+            continue;
+        }
+        if probe_strategy(target, buf, st).await {
+            if let Ok(mut c) = cache.lock() {
+                c.insert(host_key.to_string(), st);
+            }
+            return st;
+        }
+    }
+    let fb = dpi_core::auto_pick(buf);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(host_key.to_string(), fb);
+    }
+    emit(log, format!("[auto] {host_key} prob tutmadı, yedek {fb:?}"));
+    fb
+}
+
 async fn relay(
     mut inbound: TcpStream,
     mut outbound: TcpStream,
