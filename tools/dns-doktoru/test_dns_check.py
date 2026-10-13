@@ -13,6 +13,12 @@ from dns_check import (
     sinifla,
     sonuc_metni,
 )
+from win_dns import (
+    _hata_satiri,
+    _kisa_hata,
+    geri_al_komutu,
+    uygula_komutu,
+)
 
 
 class TestSinifla(unittest.TestCase):
@@ -92,6 +98,35 @@ class TestSonucMetni(unittest.TestCase):
     def test_bos_liste_tire(self):
         s = sonuc_metni("a.com", [], [], DURUM_COZULEMEDI)
         self.assertIn("-", s)
+
+
+class TestWinDnsKomut(unittest.TestCase):
+    def test_doh_adresleri_tek_tek(self):
+        komut = uygula_komutu("Ethernet")
+        self.assertIn("-ServerAddress 1.1.1.1 ", komut)
+        self.assertIn("-ServerAddress 1.0.0.1 ", komut)
+        self.assertNotIn("-ServerAddress 1.1.1.1,1.0.0.1", komut)
+
+    def test_takma_ad_kacirilir(self):
+        komut = uygula_komutu("A'B")
+        self.assertIn("'A''B'", komut)
+
+    def test_geri_al_bos_sunucu_sifirlar(self):
+        komut = geri_al_komutu("Ethernet", [])
+        self.assertIn("-ResetServerAddresses", komut)
+
+    def test_geri_al_kayitli_sunucu(self):
+        komut = geri_al_komutu("Ethernet", ["192.168.1.1"])
+        self.assertIn("-ServerAddresses 192.168.1.1", komut)
+        self.assertIn("Remove-DnsClientDohServerAddress", komut)
+
+    def test_hata_satiri(self):
+        self.assertEqual(_hata_satiri("x\nHATA: kisa\n"), "kisa")
+        self.assertEqual(_hata_satiri("HATA yok"), "")
+
+    def test_kisa_hata_kirpilir(self):
+        uzun = "HATA: " + "a" * 500
+        self.assertLessEqual(len(_kisa_hata(uzun)), 303)
 
 
 if __name__ == "__main__":

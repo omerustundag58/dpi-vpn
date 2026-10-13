@@ -50,33 +50,72 @@ def _ps_argumanlari(ps_komutu):
             "-EncodedCommand", _kodlanmis(ps_komutu)]
 
 
+def _hata_sarmala(ps_komutu):
+    """Komutu try/catch ile sar: hata kisa 'HATA: ...' satiri olur.
+
+    Yonlendirilmis stderr PowerShell'de CLIXML ham metin uretir,
+    bu yuzden hata stdout uzerinden duz metinle tasinir.
+    """
+    return ("try { " + ps_komutu + " } catch { "
+            "Write-Output ('HATA: ' + $_.Exception.Message); exit 1 }")
+
+
+def _kisa_hata(metin, ust_sinir=300):
+    tek = " ".join((metin or "").split())
+    if len(tek) > ust_sinir:
+        return tek[:ust_sinir] + "..."
+    return tek or "bilinmeyen hata"
+
+
+def _hata_satiri(cikti):
+    for satir in (cikti or "").splitlines():
+        if satir.startswith("HATA:"):
+            return _kisa_hata(satir[5:].strip())
+    return ""
+
+
 def _ps_calistir(ps_komutu, zaman_asimi=30):
     """Yonetici olarak zaten calisiyorsa dogrudan calistir."""
     try:
         islem = subprocess.run(
-            ["powershell"] + _ps_argumanlari(ps_komutu),
+            ["powershell"] + _ps_argumanlari(_hata_sarmala(ps_komutu)),
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=zaman_asimi)
     except FileNotFoundError:
         return False, "", "powershell bulunamadi"
     except subprocess.TimeoutExpired:
         return False, "", "komut zaman asimina ugradi"
+    cikti = (islem.stdout or "").strip()
     if islem.returncode != 0:
-        return False, islem.stdout.strip(), islem.stderr.strip() or \
+        return False, cikti, _hata_satiri(cikti) or \
             f"cikis kodu {islem.returncode}"
-    return True, islem.stdout.strip(), ""
+    return True, cikti, ""
 
 
 def _yukseltilmis_calistir(ps_komutu):
-    """UAC ile yukselt, -Wait -PassThru ile bekle, cikis kodunu dondur.
+    """UAC ile yukselt, -Wait -PassThru ile bekle, sonucu dondur.
 
     Dis katmanda tirnak kullanilmaz: ic komut base64 oldugundan
-    tek tirnakli dizi oge olarak guvenle gecilir.
+    tek tirnakli dizi oge olarak guvenle gecilir. Yukseltilmis
+    cocugun stdout'u yakalanamadigindan sonuc gecici dosyayla
+    tasinir; pencere gizlenir (UAC sorusu yine cikar).
+    Donus: (basarili, ileti). Basarida ileti komutun ciktisidir.
     """
-    kod = _kodlanmis(ps_komutu)
+    import tempfile
+    tanitim, sonuc_yolu = tempfile.mkstemp(prefix="dnsdoktoru-",
+                                           suffix=".txt")
+    os.close(tanitim)
+    yol_ps = sonuc_yolu.replace("'", "''")
+    govde = ("$dosya = '" + yol_ps + "'; try { $cikti = @(" + ps_komutu +
+             "); ($cikti -join [Environment]::NewLine) | "
+             "Set-Content -LiteralPath $dosya -Encoding utf8; exit 0 } "
+             "catch { ('HATA: ' + $_.Exception.Message) | "
+             "Set-Content -LiteralPath $dosya -Encoding utf8; exit 1 }")
+    kod = _kodlanmis(govde)
     ic = ("Start-Process -FilePath powershell -ArgumentList '-NoProfile',"
           "'-NonInteractive','-EncodedCommand','" + kod + "' -Verb RunAs "
-          "-Wait -PassThru | Select-Object -ExpandProperty ExitCode")
+          "-WindowStyle Hidden -Wait -PassThru | "
+          "Select-Object -ExpandProperty ExitCode")
     try:
         islem = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive",
@@ -87,19 +126,28 @@ def _yukseltilmis_calistir(ps_komutu):
         return False, "powershell bulunamadi"
     except subprocess.TimeoutExpired:
         return False, "yukseltilmis komut zaman asimina ugradi"
+    try:
+        with open(sonuc_yolu, encoding="utf-8") as dosya:
+            sonuc = dosya.read().strip()
+    except OSError:
+        sonuc = ""
+    finally:
+        try:
+            os.remove(sonuc_yolu)
+        except OSError:
+            pass
     cikti = (islem.stdout or "").strip()
     if islem.returncode != 0:
         # Kullanici UAC'yi reddetti ya da baslatma basarisiz.
-        hata = (islem.stderr or "").strip().splitlines()
-        son = hata[-1] if hata else "UAC reddedildi ya da baslatilamadi"
-        return False, son
+        return False, "UAC reddedildi ya da baslatilamadi"
     try:
         kod_sonuc = int(cikti.split()[-1])
     except (ValueError, IndexError):
         return False, "yukseltilmis komutun cikis kodu okunamadi"
     if kod_sonuc != 0:
-        return False, f"komut cikis kodu {kod_sonuc}"
-    return True, ""
+        return False, _hata_satiri(sonuc) or \
+            f"komut cikis kodu {kod_sonuc}"
+    return True, sonuc
 
 
 def _takma_ad(ps_komutu_takma):
@@ -156,6 +204,41 @@ def onceki_yukle():
         return {}, str(exc)
 
 
+def uygula_komutu(takma_ad):
+    """Uygulama PowerShell komutunu kur (saf fonksiyon).
+
+    Add-DnsClientDohServerAddress -ServerAddress tek adres alir,
+    dizi verilirse donusum hatasi verir; bu yuzden iki ayri cagri.
+    """
+    doh_ekle = "; ".join(
+        "Add-DnsClientDohServerAddress -ServerAddress " + adres +
+        " -DohTemplate " + DOH_SABLON +
+        " -AllowFallbackToUdp $false -AutoUpgrade $true"
+        for adres in (DNS_BIRINCIL, DNS_IKINCIL))
+    return ("$ErrorActionPreference = 'Stop'; "
+            "Set-DnsClientServerAddress -InterfaceAlias '" +
+            _takma_ad(takma_ad) + "' -ServerAddresses " +
+            DNS_BIRINCIL + "," + DNS_IKINCIL + "; "
+            "if (Get-Command Add-DnsClientDohServerAddress "
+            "-ErrorAction SilentlyContinue) { " +
+            doh_ekle + "; 'DOH-TAMAM' } else { 'DOH-YOK' }")
+
+
+def geri_al_komutu(takma_ad, sunucular):
+    """Geri alma PowerShell komutunu kur (saf fonksiyon)."""
+    if sunucular:
+        dns_ifade = "-ServerAddresses " + ",".join(sunucular)
+    else:
+        dns_ifade = "-ResetServerAddresses"
+    return ("$ErrorActionPreference = 'Stop'; "
+            "Set-DnsClientServerAddress -InterfaceAlias '" +
+            _takma_ad(takma_ad) + "' " + dns_ifade + "; "
+            "Remove-DnsClientDohServerAddress -ServerAddress " +
+            DNS_BIRINCIL + " -ErrorAction SilentlyContinue; "
+            "Remove-DnsClientDohServerAddress -ServerAddress " +
+            DNS_IKINCIL + " -ErrorAction SilentlyContinue; 'GERI-TAMAM'")
+
+
 def uygula(takma_ad):
     """DNS'i Cloudflare + DoH yap. Donus: (basarili, ileti)."""
     if not windows_mu():
@@ -168,26 +251,15 @@ def uygula(takma_ad):
     ok, hata = onceki_kaydet(takma_ad, sunucular)
     if not ok:
         return False, f"onceki ayar kaydedilemedi: {hata}"
-    ps = ("$ErrorActionPreference = 'Stop'; "
-          "Set-DnsClientServerAddress -InterfaceAlias '" +
-          _takma_ad(takma_ad) + "' -ServerAddresses " +
-          DNS_BIRINCIL + "," + DNS_IKINCIL + "; "
-          "if (Get-Command Add-DnsClientDohServerAddress "
-          "-ErrorAction SilentlyContinue) { "
-          "Add-DnsClientDohServerAddress -ServerAddress " +
-          DNS_BIRINCIL + "," + DNS_IKINCIL +
-          " -DohTemplate " + DOH_SABLON +
-          " -AllowFallbackToUdp $false -AutoUpgrade $true; 'DOH-TAMAM' } "
-          "else { 'DOH-YOK' }")
+    ps = uygula_komutu(takma_ad)
     if yonetici_mi():
         ok, cikti, hata = _ps_calistir(ps, zaman_asimi=60)
         if not ok:
             return False, f"uygulanamadi: {hata}"
     else:
-        ok, hata = _yukseltilmis_calistir(ps)
+        ok, cikti = _yukseltilmis_calistir(ps)
         if not ok:
-            return False, f"uygulanamadi: {hata}"
-        cikti = ""
+            return False, f"uygulanamadi: {cikti}"
     if "DOH-YOK" in cikti:
         return True, "DNS ayarlandi, DoH destegi yok (eski Windows)"
     return True, "DNS + DoH ayarlandi (1.1.1.1)"
@@ -203,17 +275,7 @@ def geri_al():
                        "Windows ayarlarindan sifirlayin")
     takma_ad = kayit["takma_ad"]
     sunucular = kayit.get("sunucular") or []
-    if sunucular:
-        dns_ifade = "-ServerAddresses " + ",".join(sunucular)
-    else:
-        dns_ifade = "-ResetServerAddresses"
-    ps = ("$ErrorActionPreference = 'Stop'; "
-          "Set-DnsClientServerAddress -InterfaceAlias '" +
-          _takma_ad(takma_ad) + "' " + dns_ifade + "; "
-          "Remove-DnsClientDohServerAddress -ServerAddress " +
-          DNS_BIRINCIL + " -ErrorAction SilentlyContinue; "
-          "Remove-DnsClientDohServerAddress -ServerAddress " +
-          DNS_IKINCIL + " -ErrorAction SilentlyContinue")
+    ps = geri_al_komutu(takma_ad, sunucular)
     if yonetici_mi():
         ok, _cikti, hata = _ps_calistir(ps, zaman_asimi=60)
         if not ok:
