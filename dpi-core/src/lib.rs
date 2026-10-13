@@ -336,13 +336,25 @@ pub fn auto_strategy(packet: &[u8], candidates: &[Strategy]) -> Option<Strategy>
 /// Ağ probu YOK — assess filtresi + sabit sıra. İlk bağlantıda bir kez çalışır,
 /// sonrası önbellekten gelir. Hiçbiri gizleyemezse varsayılan döner.
 pub fn auto_pick(packet: &[u8]) -> Strategy {
-    const ORDER: [Strategy; 4] = [
+    auto_strategy(packet, &ladder()).unwrap_or_default()
+}
+
+/// Shroudly merdiveninden uyarlama (sürücüsüz alt küme):
+/// record-split > SNI-öncesi > ters-sıra > düz bölme.
+/// (disorder/fake/oob ham soket ister — WinDivert modunda winws verir.)
+pub fn ladder() -> [Strategy; 4] {
+    [
         Strategy::RecordSplit { delay_ms: 0 },
         Strategy::Custom { cut: CutPos::Before, order: SendOrder::InOrder, delay_ms: 0 },
         Strategy::Custom { cut: CutPos::Mid, order: SendOrder::Reversed, delay_ms: 0 },
         Strategy::Split { split_at: 2 },
-    ];
-    auto_strategy(packet, &ORDER).unwrap_or_default()
+    ]
+}
+
+/// Sunucu yanıtı ServerHello mu? (canlı prob sınıflandırması)
+/// Alert/RST/kapanma → false.
+pub fn is_server_hello(resp: &[u8]) -> bool {
+    resp.len() >= 7 && resp[0] == 0x16 && resp[5] == 0x02
 }
 /// SNI'ı tek parçada göremeyince geçirir.
 /// Hız istiyorsan bunu kullan.
@@ -1528,5 +1540,20 @@ mod tests {
         assert_eq!(auto_pick(b"GET /"), Strategy::default());
         // seçilen gerçekten gizler
         assert_eq!(assess(&pkt, auto_pick(&pkt)), Visibility::Hidden);
+    }
+
+    #[test]
+    fn ladder_order_and_server_hello() {
+        let l = ladder();
+        assert_eq!(l[0], Strategy::RecordSplit { delay_ms: 0 });
+        assert_eq!(l.len(), 4);
+        // ServerHello tanıma
+        assert!(is_server_hello(&[0x16, 0x03, 0x03, 0x00, 0x2E, 0x02, 0x00]));
+        assert!(is_server_hello(&[0x16, 0x03, 0x01, 0x00, 0x46, 0x02, 0x00, 0xFF]));
+        // Alert / kısa / boş değil
+        assert!(!is_server_hello(&[0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x00]));
+        assert!(!is_server_hello(&[0x16, 0x03]));
+        assert!(!is_server_hello(&[]));
+        assert!(!is_server_hello(b"HTTP/1.1 200 OK"));
     }
 }

@@ -143,6 +143,7 @@ async fn handle_client(
     strategy: Strategy,
     quiet: bool,
     auto: bool,
+    auto_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Strategy>>>,
     stats: Arc<Stats>,
     log: Log,
 ) {
@@ -243,8 +244,34 @@ async fn handle_client(
     }
     buf = read_tls_full(&mut inbound, buf).await;
 
-    // Otomatik mod: pakete göre en iyi taktik (önbelleksiz, deterministik).
-    let strategy = if auto { dpi_core::auto_pick(&buf) } else { strategy };
+    // Otomatik mod: önbellek, yoksa merdiveni canlı dene.
+    let strategy = if auto {
+        let key = host_of(&connect_host, &buf, dpi_core::find_sni(&buf)).unwrap_or_default();
+        if key.is_empty() {
+            strategy
+        } else if let Some(hit) =
+            auto_cache.lock().ok().and_then(|c| c.get(&key).copied())
+        {
+            hit
+        } else {
+            let probe_target = match &connect_host {
+                Some(h) => h.clone(),
+                _ => match resolve_target_with_sni(&buf, dpi_core::find_sni(&buf)) {
+                    Some(t) if !t.is_empty() => t,
+                    _ => String::new(),
+                },
+            };
+            if probe_target.is_empty() {
+                strategy
+            } else {
+                let pick = pick_live(&probe_target, &key, &buf, &auto_cache, &log).await;
+                emit(&log, format!("[auto] {key} -> {pick:?}"));
+                pick
+            }
+        }
+    } else {
+        strategy
+    };
     let (sni_opt, mut parts) = dpi_core::split_once(&buf, strategy);
     let mut delay = match strategy {
         Strategy::SplitWithDelay { delay_ms, .. } => delay_ms,
@@ -336,6 +363,8 @@ pub async fn serve(
         }
     };
     emit(&log, format!("[*] dinliyor: {listen} ({:?})", cfg.strategy));
+    let auto_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Strategy>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     loop {
         tokio::select! {
             _ = stop.changed() => break,
@@ -349,8 +378,9 @@ pub async fn serve(
                     let lg = log.clone();
                     let q = cfg.quiet;
                     let au = cfg.auto;
+                    let ac = auto_cache.clone();
                     tokio::spawn(async move {
-                        handle_client(sock, st, q, au, sc, lg).await;
+                        handle_client(sock, st, q, au, ac, sc, lg).await;
                     });
                 }
                 Err(_) => break,

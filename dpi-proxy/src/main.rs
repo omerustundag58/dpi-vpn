@@ -322,7 +322,7 @@ async fn handle_client(
     buf = read_tls_full(&mut inbound, buf).await;
 
     // Hızlı yol: tek parse ile SNI + parçalar (Android'de pil/CPU dostu).
-    // Otomatik modda host'un taktiği önbellekten gelir, yoksa seçilir.
+    // Otomatik modda host'un taktiği önbellekten gelir, yoksa merdiven canlı denenir.
     let strategy_owned = if auto {
         let key = host_of(&connect_host, &buf, dpi_core::find_sni(&buf)).unwrap_or_default();
         if key.is_empty() {
@@ -332,11 +332,19 @@ async fn handle_client(
             match hit {
                 Some(s) => s,
                 None => {
-                    let pick = dpi_core::auto_pick(&buf);
-                    if let Ok(mut c) = auto_cache.lock() {
-                        c.insert(key, pick);
+                    // Prob hedefi: CONNECT hostu ya da SNI:443
+                    let probe_target = match &connect_host {
+                        Some(h) if force_target.is_none() => h.clone(),
+                        _ => match resolve_target_with_sni(&buf, dpi_core::find_sni(&buf), force_target.as_deref()) {
+                            Some(t) if !t.is_empty() => t,
+                            _ => String::new(),
+                        },
+                    };
+                    if probe_target.is_empty() {
+                        strategy
+                    } else {
+                        pick_live(&probe_target, &key, &buf, &auto_cache).await
                     }
-                    pick
                 }
             }
         }
@@ -405,6 +413,57 @@ async fn handle_client(
     relay(inbound, outbound, stats, &target, total as u64, quiet).await;
 }
 
+/// Canlı prob: taktiği gerçek hedefe karşı dene, ServerHello gelirse true.
+/// Shroudly merdiveninden uyarlama (sürücüsüz alt küme).
+async fn probe_strategy(target: &str, buf: &[u8], st: Strategy) -> bool {
+    let (_, mut parts) = dpi_core::split_once(buf, st);
+    if matches!(st, Strategy::Custom { order: SendOrder::Reversed, .. }) && parts.len() == 2 {
+        parts.swap(0, 1);
+    }
+    let mut outbound = match tokio::time::timeout(Duration::from_millis(2500), TcpStream::connect(target)).await {
+        Ok(Ok(s)) => s,
+        _ => return false,
+    };
+    for p in &parts {
+        if tokio::time::timeout(Duration::from_secs(2), outbound.write_all(p)).await.is_err() {
+            return false;
+        }
+    }
+    let mut resp = vec![0u8; 16];
+    match tokio::time::timeout(Duration::from_secs(3), outbound.read(&mut resp)).await {
+        Ok(Ok(n)) => dpi_core::is_server_hello(&resp[..n]),
+        _ => false,
+    }
+}
+
+/// Host için kazanan taktik: önce önbellek, yoksa merdiveni canlı dene.
+async fn pick_live(
+    target: &str,
+    host_key: &str,
+    buf: &[u8],
+    cache: &Arc<std::sync::Mutex<std::collections::HashMap<String, Strategy>>>,
+) -> Strategy {
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(host_key).copied()) {
+        return hit;
+    }
+    for st in dpi_core::ladder() {
+        // Yerel filtre: göstermeyeni ağa bile sorma
+        if dpi_core::assess(buf, st) != dpi_core::Visibility::Hidden {
+            continue;
+        }
+        if probe_strategy(target, buf, st).await {
+            if let Ok(mut c) = cache.lock() {
+                c.insert(host_key.to_string(), st);
+            }
+            return st;
+        }
+    }
+    let fb = dpi_core::auto_pick(buf);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(host_key.to_string(), fb);
+    }
+    fb
+}
 /// Çift yönlü relay + sayaç. total: önceden yazılmış bayt (bölünmüş hello).
 async fn relay(
     mut inbound: TcpStream,
