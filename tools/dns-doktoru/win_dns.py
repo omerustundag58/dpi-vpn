@@ -209,7 +209,13 @@ def uygula_komutu(takma_ad):
 
     Add-DnsClientDohServerAddress -ServerAddress tek adres alir,
     dizi verilirse donusum hatasi verir; bu yuzden iki ayri cagri.
+    Kayit zaten varsa Add patlar; once sessizce silinir, uygula
+    tekrar calistirilabilir olur.
     """
+    doh_sil = "; ".join(
+        "Remove-DnsClientDohServerAddress -ServerAddress " + adres +
+        " -ErrorAction SilentlyContinue"
+        for adres in (DNS_BIRINCIL, DNS_IKINCIL))
     doh_ekle = "; ".join(
         "Add-DnsClientDohServerAddress -ServerAddress " + adres +
         " -DohTemplate " + DOH_SABLON +
@@ -220,7 +226,7 @@ def uygula_komutu(takma_ad):
             _takma_ad(takma_ad) + "' -ServerAddresses " +
             DNS_BIRINCIL + "," + DNS_IKINCIL + "; "
             "if (Get-Command Add-DnsClientDohServerAddress "
-            "-ErrorAction SilentlyContinue) { " +
+            "-ErrorAction SilentlyContinue) { " + doh_sil + "; " +
             doh_ekle + "; 'DOH-TAMAM' } else { 'DOH-YOK' }")
 
 
