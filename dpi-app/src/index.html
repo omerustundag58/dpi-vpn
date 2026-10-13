@@ -475,7 +475,7 @@
           </label>
           <select id="setting-engine" class="w-full bg-slate-950 border border-slate-700/70 rounded-xl px-3 py-2 text-xs font-medium text-slate-200 focus:outline-none focus:border-blue-500">
             <option value="rust" data-i18n="engine_rust">Rust Yerel Sürücü</option>
-            <option value="windivert" data-i18n="engine_windivert">WinDivert (Yakında)</option>
+            <option value="windivert" data-i18n="engine_windivert" disabled>WinDivert (Yakında)</option>
           </select>
           <div id="windivert-warn-box" class="hidden p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300 mt-1" data-i18n="windivert_warn">
             ⚠️ WinDivert motoru henüz geliştirme aşamasındadır ("yakında" desteği verilecek).
@@ -668,7 +668,7 @@
       quicBlock: localStorage.getItem('dpi_quic') === 'true',
       lang: localStorage.getItem('dpi_lang') || 'tr',
       theme: localStorage.getItem('dpi_theme') || 'dark',
-      engine: localStorage.getItem('dpi_engine') || 'rust',
+      engine: 'rust',
       autostart: localStorage.getItem('dpi_autostart') === 'true',
       minimizeTray: localStorage.getItem('dpi_minimize_tray') !== 'false', // default true
       logCount: 0
