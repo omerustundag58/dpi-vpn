@@ -951,7 +951,7 @@ class App:
             if not shown:
                 raise RuntimeError("no bench")
         except Exception:
-            self.log("[hız] one-parse=253ns/op")
+            self.log("[hız] ölçüm yapılamadı (cargo gerekli)")
 
     def on_close(self):
         try:
