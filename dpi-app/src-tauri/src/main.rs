@@ -59,34 +59,11 @@ fn quiet_output(program: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-// PowerShell komutunu UTF-16LE + base64 olarak kodlar (-EncodedCommand): tırnak sorunu olmaz.
-fn encode_ps(script: &str) -> String {
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
-        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(T[((n >> (18 - 6 * i)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
-// Yönetici olarak çalıştır (UAC). Komut bitene kadar bekler; başarıda true.
+// Yönetici olarak çalıştır (UAC). Başarıda true.
 fn run_elevated(ps_command: &str) -> bool {
-    let encoded = encode_ps(ps_command);
-    let script = format!(
-        "try {{ $p = Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -PassThru \
-         -ArgumentList '-NoProfile -EncodedCommand {encoded}'; if ($p.ExitCode -eq 0) {{ exit 0 }} else {{ exit 1 }} }} catch {{ exit 1 }}"
-    );
     std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
+        .args(["-NoProfile", "-Command",
+            &format!("Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile -Command \"{ps_command}\"' -WindowStyle Hidden")])
         .creation_flags(NO_WINDOW)
         .status()
         .map(|s| s.success())
