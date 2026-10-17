@@ -813,8 +813,8 @@
         await tauriInvoke('proxy_start', {
           profile: visibleProfile,
           mode: state.mode,
-          delayMs: state.delayMs,
-          lanShare: state.lanShare
+          delay_ms: state.delayMs,
+          lan_share: state.lanShare
         });
         state.running = true;
         appendLog('ok', STR[state.lang].msg_running);
@@ -1011,8 +1011,8 @@
           await tauriInvoke('proxy_start', {
             profile: visibleProfile,
             mode: state.mode,
-            delayMs: state.delayMs,
-            lanShare: targetState
+            delay_ms: state.delayMs,
+            lan_share: targetState
           });
         }
         state.lanShare = targetState;
