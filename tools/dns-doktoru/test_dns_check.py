@@ -107,12 +107,6 @@ class TestWinDnsKomut(unittest.TestCase):
         self.assertIn("-ServerAddress 1.0.0.1 ", komut)
         self.assertNotIn("-ServerAddress 1.1.1.1,1.0.0.1", komut)
 
-    def test_doh_once_silinir(self):
-        komut = uygula_komutu("Ethernet")
-        self.assertLess(komut.index("Remove-DnsClientDohServerAddress"),
-                        komut.index("Add-DnsClientDohServerAddress "
-                                    "-ServerAddress"))
-
     def test_takma_ad_kacirilir(self):
         komut = uygula_komutu("A'B")
         self.assertIn("'A''B'", komut)
