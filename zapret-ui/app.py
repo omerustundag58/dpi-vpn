@@ -748,9 +748,9 @@ class App:
         args = WINWS2_ARGS.get(strat, WINWS2_ARGS["Türk Telekom"])
         cmd = [WINWS2, "--wf-l3=ipv4", "--wf-tcp-out=0-65535", "--wf-udp-out=0-65535"] + args.split(" ")
         if EXCLUDELIST and os.path.exists(EXCLUDELIST):
-            cmd.append(f"--hostlist-exclude={EXCLUDELIST}")
+            cmd.append(f'--hostlist-exclude="{EXCLUDELIST}"')
         for lua in ("zapret-lib.lua", "zapret-antidpi.lua", "zapret-auto.lua"):
-            cmd.append(f"--lua-init=@{os.path.join(LUA, lua)}")
+            cmd.append(f'--lua-init="@{os.path.join(LUA, lua)}"')
         return cmd
 
     def toggle(self):
