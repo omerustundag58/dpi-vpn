@@ -401,23 +401,15 @@ pub async fn serve(
     cfg: EngineConfig,
     stats: Arc<Stats>,
     log: Log,
-    stop: tokio::sync::watch::Receiver<bool>,
-) {
-    match TcpListener::bind(&listen).await {
-        Ok(listener) => serve_listener(listen, listener, cfg, stats, log, stop).await,
-        Err(e) => emit(&log, format!("[-] dinleme hatası {listen}: {e}")),
-    }
-}
-
-/// Bağlanmış dinleyiciyle çalışır; bağlama hatası çağırana bırakılır.
-pub async fn serve_listener(
-    listen: String,
-    listener: TcpListener,
-    cfg: EngineConfig,
-    stats: Arc<Stats>,
-    log: Log,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
+    let listener = match TcpListener::bind(&listen).await {
+        Ok(l) => l,
+        Err(e) => {
+            emit(&log, format!("[-] dinleme hatası {listen}: {e}"));
+            return;
+        }
+    };
     emit(&log, format!("[*] dinliyor: {listen} ({:?})", cfg.strategy));
     let auto_cache: Arc<std::sync::Mutex<std::collections::HashMap<String, Strategy>>> =
         Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));

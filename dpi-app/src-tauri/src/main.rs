@@ -98,9 +98,6 @@ async fn proxy_start(
         _ => dpi_core::Strategy::RecordSplit { delay_ms: 0 },
     };
     let listen = if lan_share { "0.0.0.0:8888" } else { "127.0.0.1:8888" }.to_string();
-    let listener = tokio::net::TcpListener::bind(&listen)
-        .await
-        .map_err(|e| format!("dinleme hatası {listen}: {e}"))?;
     let (log_tx, mut log_rx) = mpsc::unbounded_channel::<(String, String)>();
     let (stop_tx, stop_rx) = watch::channel(false);
     let stats = Arc::new(Stats::new());
@@ -112,7 +109,7 @@ async fn proxy_start(
         }
     });
     let cfg = EngineConfig { strategy, quiet: true, auto };
-    tauri::async_runtime::spawn(engine::serve_listener(listen.clone(), listener, cfg, stats_run, log_tx, stop_rx));
+    tauri::async_runtime::spawn(engine::serve(listen.clone(), cfg, stats_run, log_tx, stop_rx));
     {
         let mut st = state.lock().map_err(|e| e.to_string())?;
         st.stop_tx = Some(stop_tx);
