@@ -23,7 +23,7 @@ try:
 except ImportError:
     HAVE_TRAY = False
 
-APP_TITLE = "DPI VPN v0.8"
+APP_TITLE = "DPI VPN v0.3"
 DNS_PRIMARY = "1.1.1.1"
 DNS_SECONDARY = "1.0.0.1"
 DNS6_PRIMARY = "2606:4700:4700::1111"
@@ -88,7 +88,7 @@ STR = {
     "need_admin": ("WinDivert admin ister. Yönetici olarak çalıştırın.",
                    "WinDivert needs admin. Run as administrator."),
     "no_winws": ("winws2.exe bulunamadı:", "winws2.exe not found:"),
-    "footer": ("DPI VPN v0.8  •  Rust çekirdek", "DPI VPN v0.8  •  Rust core"),
+    "footer": ("DPI VPN v0.3  •  Rust çekirdek", "DPI VPN v0.3  •  Rust core"),
     "tray_show": ("Göster", "Show"),
     "tray_toggle": ("BAŞLAT/DURDUR", "START/STOP"),
     "tray_exit": ("Çıkış", "Exit"),
